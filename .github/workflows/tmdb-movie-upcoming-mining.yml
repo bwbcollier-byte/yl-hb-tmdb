@@ -1,0 +1,42 @@
+name: TMDb Film Upcoming Mining
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Max pages to fetch"
+        required: false
+        default: "5"
+      limit:
+        description: "Max records to process over all pages"
+        required: false
+        default: "0"
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Mining Script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
+          MINING_ENDPOINT: '/movie/upcoming'
+          MEDIA_TYPE: 'movie'
+          WORKFLOW_FILE: 'tmdb-movie-upcoming-mining.yml'
+        run: npx ts-node src/tmdb-media-mining.ts

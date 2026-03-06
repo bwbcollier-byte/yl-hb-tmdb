@@ -100,12 +100,19 @@ export async function fetchTmdbTrendingPeople(page: number = 1): Promise<any | n
     );
 }
 
-/**
- * Fetch a page of popular people.
- * @param page Page number (default 1)
- */
 export async function fetchTmdbPopularPeople(page: number = 1): Promise<any | null> {
     return tmdbFetch(
         `${TMDB_BASE_URL}/person/popular?language=en-US&page=${page}`
+    );
+}
+
+/**
+ * Generic fetch for media mining endpoints.
+ * @param endpoint Endpoint path (e.g. '/movie/popular', '/trending/tv/day')
+ * @param page Page number
+ */
+export async function fetchTmdbMediaMining(endpoint: string, page: number = 1): Promise<any | null> {
+    return tmdbFetch(
+        `${TMDB_BASE_URL}${endpoint}?language=en-US&page=${page}`
     );
 }
