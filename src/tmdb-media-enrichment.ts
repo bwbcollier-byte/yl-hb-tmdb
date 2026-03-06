@@ -15,7 +15,7 @@ async function processMedia() {
     // Fetch media profiles that have a tmdb_id, unprocessed first
     const { data: mediaRecords, error } = await supabase
         .from('media_profiles')
-        .select('id, tmdb_id, workflow_logs')
+        .select('id, tmdb_id')
         .not('tmdb_id', 'is', null)
         .order('tmdb_check', { ascending: true, nullsFirst: true })
         .order('last_processed', { ascending: true, nullsFirst: true })
@@ -113,17 +113,6 @@ async function processMedia() {
             updates.tmdb_budget = data.budget ?? null;
             updates.tmdb_revenue = data.revenue ?? null;
         }
-
-        // Merge into existing workflow_logs
-        const logs = (record.workflow_logs as Record<string, any>) || {};
-        logs['TMDb'] = {
-            last_run: new Date().toISOString(),
-            status: 'success',
-            media_type: mediaType,
-            cast_count: cast.length,
-            director: directors.join(', ') || null
-        };
-        updates.workflow_logs = logs;
 
         const { error: updateError } = await supabase
             .from('media_profiles')
