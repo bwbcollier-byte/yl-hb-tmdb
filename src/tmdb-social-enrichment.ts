@@ -33,10 +33,12 @@ async function processProfiles() {
         const personId = profile.social_id;
         console.log(`[${processedCount}/${profiles.length}] Person ID: ${personId} — ${profile.name || profile.id}`);
 
-        if (!personId) {
+        // Skip missing or non-numeric IDs (e.g. 'not.found' placeholder values)
+        if (!personId || !/^\d+$/.test(String(personId))) {
+            console.log(`   ⏭️  Skipping invalid social_id: "${personId}"`);
             await supabase
                 .from('social_profiles')
-                .update({ tmdb_check: 'no_id', last_checked: new Date().toISOString() })
+                .update({ tmdb_check: 'invalid_id', last_checked: new Date().toISOString() })
                 .eq('id', profile.id);
             continue;
         }
