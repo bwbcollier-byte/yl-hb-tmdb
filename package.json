@@ -10,7 +10,9 @@
     "dev:social": "LIMIT=5 ts-node src/tmdb-social-enrichment.ts",
     "dev:media": "LIMIT=5 ts-node src/tmdb-media-enrichment.ts",
     "trending": "ts-node src/tmdb-trending-mining.ts",
-    "dev:trending": "MAX_PAGES=1 ts-node src/tmdb-trending-mining.ts"
+    "dev:trending": "MAX_PAGES=1 ts-node src/tmdb-trending-mining.ts",
+    "popular": "ts-node src/tmdb-popular-mining.ts",
+    "dev:popular": "MAX_PAGES=1 ts-node src/tmdb-popular-mining.ts"
   },
   "keywords": ["tmdb", "enrichment", "supabase"],
   "author": "",

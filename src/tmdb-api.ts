@@ -99,3 +99,13 @@ export async function fetchTmdbTrendingPeople(page: number = 1): Promise<any | n
         `${TMDB_BASE_URL}/trending/person/day?language=en-US&page=${page}`
     );
 }
+
+/**
+ * Fetch a page of popular people.
+ * @param page Page number (default 1)
+ */
+export async function fetchTmdbPopularPeople(page: number = 1): Promise<any | null> {
+    return tmdbFetch(
+        `${TMDB_BASE_URL}/person/popular?language=en-US&page=${page}`
+    );
+}
