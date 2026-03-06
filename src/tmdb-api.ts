@@ -89,3 +89,13 @@ export async function fetchTmdbTv(tvId: string | number): Promise<any | null> {
         `${TMDB_BASE_URL}/tv/${tvId}?append_to_response=credits%2Cimages%2Cexternal_ids&language=en-US`
     );
 }
+
+/**
+ * Fetch a page of trending people (day window).
+ * @param page Page number (default 1)
+ */
+export async function fetchTmdbTrendingPeople(page: number = 1): Promise<any | null> {
+    return tmdbFetch(
+        `${TMDB_BASE_URL}/trending/person/day?language=en-US&page=${page}`
+    );
+}

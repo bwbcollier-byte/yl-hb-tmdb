@@ -1,0 +1,51 @@
+name: TMDb Trending Talent Mining
+
+on:
+  schedule:
+    # Run daily at 1 AM UTC — picks up the latest trending people each day
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Number of trending pages to fetch (20 people per page, default 3)"
+        required: false
+        default: "3"
+        type: string
+
+jobs:
+  mine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run TMDb Trending Talent Mining
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '3' }}
+          CI: "true"
+        run: node dist/tmdb-trending-mining.js
+
+      - name: Report status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ TMDb Trending Talent Mining completed successfully"
+          else
+            echo "❌ TMDb Trending Talent Mining failed"
+          fi
