@@ -15,7 +15,7 @@ async function processMedia() {
     // Fetch media profiles that have a tmdb_id, unprocessed first
     const { data: mediaRecords, error } = await supabase
         .from('media_profiles')
-        .select('id, tmdb_id, tmdb_media_type, title, workflow_logs')
+        .select('id, tmdb_id, title, workflow_logs')
         .not('tmdb_id', 'is', null)
         .order('tmdb_check', { ascending: true, nullsFirst: true })
         .order('last_processed', { ascending: true, nullsFirst: true })
@@ -31,8 +31,8 @@ async function processMedia() {
     for (const record of mediaRecords) {
         processedCount++;
         const tmdbId = record.tmdb_id;
-        // Default to 'movie' if tmdb_media_type is not set
-        const mediaType: string = record.tmdb_media_type || 'movie';
+        // Default to 'movie' — set tmdb_media_type = 'tv' in the DB to override per record
+        const mediaType: string = (record as any).tmdb_media_type || 'movie';
         console.log(`[${processedCount}/${mediaRecords.length}] TMDb ${mediaType} ID: ${tmdbId} — ${record.title || record.id}`);
 
         const data = mediaType === 'tv'
