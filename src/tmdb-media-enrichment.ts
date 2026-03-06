@@ -18,7 +18,6 @@ async function processMedia() {
         .select('id, tmdb_id')
         .not('tmdb_id', 'is', null)
         .order('tmdb_check', { ascending: true, nullsFirst: true })
-        .order('last_processed', { ascending: true, nullsFirst: true })
         .limit(LIMIT);
 
     if (error) { console.error('❌ Fetch error:', error.message); return; }
@@ -43,7 +42,7 @@ async function processMedia() {
             failedCount++;
             await supabase
                 .from('media_profiles')
-                .update({ tmdb_check: 'not_found', last_checked: new Date().toISOString() })
+                .update({ tmdb_check: 'not_found' })
                 .eq('id', record.id);
             continue;
         }
@@ -102,10 +101,7 @@ async function processMedia() {
             tmdb_popularity: data.popularity ?? null,
             tmdb_cast: cast.length > 0 ? JSON.stringify(cast) : null,
             tmdb_director: directors.length > 0 ? directors.join(', ') : null,
-            tmdb_images: JSON.stringify({ posters, backdrops }),
-            last_processed: new Date().toISOString(),
-            last_checked: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+            tmdb_images: JSON.stringify({ posters, backdrops })
         };
 
         // Movie-only fields
