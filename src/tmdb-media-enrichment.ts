@@ -13,9 +13,10 @@ async function processMedia() {
     console.log(`   Limit: ${RUN_ALL ? 'All' : LIMIT} records\n`);
 
     // Fetch media profiles that have a tmdb_id, unprocessed first
+    // Selecting tmdb_media_type to correctly fetch Movie vs TV
     const { data: mediaRecords, error } = await supabase
         .from('media_profiles')
-        .select('id, tmdb_id')
+        .select('id, tmdb_id, tmdb_media_type')
         .not('tmdb_id', 'is', null)
         .order('tmdb_check', { ascending: true, nullsFirst: true })
         .limit(LIMIT);
@@ -54,9 +55,26 @@ async function processMedia() {
         const releaseDate = isMovie ? data.release_date : data.first_air_date;
         const runtime = isMovie ? (data.runtime ?? null) : (data.episode_run_time?.[0] ?? null);
 
-        // Top 10 cast members
-        const cast = (data.credits?.cast || []).slice(0, 10).map((c: any) => ({
+        // Process cast members and try to link them to local talents
+        const rawCast = (data.credits?.cast || []).slice(0, 10);
+        const castTmdbIds = rawCast.map((c: any) => String(c.id));
+        
+        // Find existing talent links for this cast
+        const { data: linkedSocials } = await supabase
+            .from('social_profiles')
+            .select('talent_id, social_id')
+            .eq('social_type', 'TMDB')
+            .in('social_id', castTmdbIds);
+
+        const talentLookup: Record<string, string> = {};
+        linkedSocials?.forEach(s => {
+            if (s.social_id) talentLookup[s.social_id] = s.talent_id;
+        });
+
+        // Map final cast object with potential talent_id
+        const cast = rawCast.map((c: any) => ({
             id: c.id,
+            talent_id: talentLookup[String(c.id)] || null,
             name: c.name,
             character: c.character,
             order: c.order,
@@ -101,7 +119,8 @@ async function processMedia() {
             tmdb_popularity: data.popularity ?? null,
             tmdb_cast: cast.length > 0 ? JSON.stringify(cast) : null,
             tmdb_director: directors.length > 0 ? directors.join(', ') : null,
-            tmdb_images: JSON.stringify({ posters, backdrops })
+            tmdb_images: JSON.stringify({ posters, backdrops }),
+            workflow_logs: { last_run: new Date().toISOString(), workflow: WORKFLOW_NAME }
         };
 
         // Movie-only fields
@@ -120,7 +139,7 @@ async function processMedia() {
             failedCount++;
         } else {
             successCount++;
-            console.log(`   ✅ Enriched: ${title} (${cast.length} cast, dir: ${directors.join(', ') || 'n/a'})`);
+            console.log(`   ✅ Enriched: ${title} (${cast.filter((c: any) => c.talent_id).length}/${cast.length} cast linked)`);
         }
 
         await sleep(SLEEP_MS);
@@ -129,5 +148,6 @@ async function processMedia() {
     const stats = getApiStats();
     console.log(`\n🎉 Done! Processed: ${processedCount}, Success: ${successCount}, Failed: ${failedCount}, API Success Rate: ${stats.successRate}%`);
 }
+
 
 processMedia().catch(console.error);
