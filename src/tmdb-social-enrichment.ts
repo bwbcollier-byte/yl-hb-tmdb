@@ -8,6 +8,38 @@ const RUN_ALL = !LIMIT_ENV || LIMIT_ENV.trim() === '';
 const LIMIT = RUN_ALL ? 999999 : parseInt(LIMIT_ENV as string);
 const WORKFLOW_NAME = 'TMDb Social Enrichment';
 
+async function upsertLinkedSocial(talentId: string, socialType: string, socialId: string, name: string) {
+    if (!socialId || socialId.trim() === '') return;
+
+    // Construct URL based on type
+    let socialUrl = '';
+    if (socialType === 'Instagram') socialUrl = `https://www.instagram.com/${socialId}/`;
+    if (socialType === 'TikTok') socialUrl = `https://www.tiktok.com/@${socialId}`;
+    if (socialType === 'Twitter') socialUrl = `https://twitter.com/${socialId}`;
+    if (socialType === 'Facebook') socialUrl = `https://www.facebook.com/${socialId}`;
+    if (socialType === 'IMDb') socialUrl = `https://www.imdb.com/name/${socialId}/`;
+
+    const { error } = await supabase
+        .from('social_profiles')
+        .upsert({
+            talent_id: talentId,
+            social_type: socialType,
+            social_id: socialId,
+            social_url: socialUrl,
+            name: name,
+            status: 'active',
+            updated_at: new Date().toISOString()
+        }, {
+            onConflict: 'talent_id, social_type'
+        });
+
+    if (error) {
+        console.error(`      ⚠️ Failed to upsert linked ${socialType}: ${error.message}`);
+    } else {
+        console.log(`      🔗 Auto-linked ${socialType}: ${socialId}`);
+    }
+}
+
 async function processProfiles() {
     console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
     console.log(`   Limit: ${RUN_ALL ? 'All' : LIMIT} records\n`);
@@ -98,6 +130,16 @@ async function processProfiles() {
         } else {
             successCount++;
             console.log(`   ✅ Enriched: ${data.name}`);
+
+            // Automatically link other social platforms discovered on TMDB
+            if (profile.talent_id) {
+                const ex = data.external_ids || {};
+                await upsertLinkedSocial(profile.talent_id, 'Instagram', ex.instagram_id, data.name);
+                await upsertLinkedSocial(profile.talent_id, 'TikTok', ex.tiktok_id, data.name);
+                await upsertLinkedSocial(profile.talent_id, 'Twitter', ex.twitter_id, data.name);
+                await upsertLinkedSocial(profile.talent_id, 'Facebook', ex.facebook_id, data.name);
+                await upsertLinkedSocial(profile.talent_id, 'IMDb', ex.imdb_id || data.imdb_id, data.name);
+            }
         }
 
         await sleep(SLEEP_MS);
@@ -108,3 +150,4 @@ async function processProfiles() {
 }
 
 processProfiles().catch(console.error);
+
