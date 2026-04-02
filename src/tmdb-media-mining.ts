@@ -4,10 +4,10 @@ import * as dotenv from 'dotenv';
 import fetch from 'node-fetch';
 dotenv.config();
 
-const PAGES = parseInt(process.env.PAGES || '5');
-const ENDPOINT = process.env.ENDPOINT || '/movie/popular'; 
+const PAGES = parseInt(process.env.MAX_PAGES || process.env.PAGES || '5');
+const ENDPOINT = process.env.ENDPOINT || process.env.MINING_ENDPOINT || '/movie/popular'; 
 const BATCH_SIZE = 100;
-const WORKFLOW_NAME = `TMDb Media Mining (${ENDPOINT})`;
+const WORKFLOW_NAME = `TMDb Media Mining (${process.env.WORKFLOW_FILE || ENDPOINT})`;
 
 async function logSystemBug(error: any) {
     const AIRTABLE_PAT = process.env.AIRTABLE_PAT;

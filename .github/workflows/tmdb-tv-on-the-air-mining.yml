@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install Dependencies
         run: npm install
@@ -34,6 +34,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
           MINING_ENDPOINT: '/tv/on_the_air'
