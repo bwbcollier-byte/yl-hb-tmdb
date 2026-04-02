@@ -29,17 +29,16 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build TypeScript
-        run: npm run build
-
       - name: Run TMDb Popular Talent Mining
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           MAX_PAGES: ${{ github.event.inputs.max_pages || '10' }}
           CI: "true"
-        run: node dist/tmdb-popular-mining.js
+        run: npx ts-node src/tmdb-popular-mining.ts
 
       - name: Report status
         if: always()

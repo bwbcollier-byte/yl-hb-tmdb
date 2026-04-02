@@ -29,17 +29,16 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build TypeScript
-        run: npm run build
-
       - name: Run TMDb Social Enrichment
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           LIMIT: ${{ github.event.inputs.record_limit }}
           CI: "true"
-        run: node dist/tmdb-social-enrichment.js
+        run: npx ts-node src/tmdb-social-enrichment.ts
 
       - name: Report status
         if: always()

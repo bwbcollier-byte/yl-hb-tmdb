@@ -116,3 +116,13 @@ export async function fetchTmdbMediaMining(endpoint: string, page: number = 1): 
         `${TMDB_BASE_URL}${endpoint}?language=en-US&page=${page}`
     );
 }
+/**
+ * Find a TMDb record by an external ID (like IMDb ID)
+ * @param externalId The ID from the external source (e.g. tt1234567)
+ * @param source The source of the ID (default: 'imdb_id')
+ */
+export async function findRecordByExternalId(externalId: string, source: string = 'imdb_id'): Promise<any | null> {
+    return tmdbFetch(
+        `${TMDB_BASE_URL}/find/${externalId}?external_source=${source}&language=en-US`
+    );
+}

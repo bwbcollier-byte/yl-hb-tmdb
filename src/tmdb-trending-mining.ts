@@ -1,28 +1,62 @@
 import { supabase } from './supabase';
 import { fetchTmdbTrendingPeople, sleep, getApiStats, getImageUrl, SLEEP_MS } from './tmdb-api';
 import * as dotenv from 'dotenv';
+import fetch from 'node-fetch';
 dotenv.config();
 
-// Number of trending pages to fetch (20 people per page)
 const MAX_PAGES = parseInt(process.env.MAX_PAGES || '3');
 const WORKFLOW_NAME = 'TMDb Trending Talent Mining';
 
+async function logSystemBug(error: any) {
+    const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
+    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appXXXXXXXXXXXXX';
+    if (!AIRTABLE_PAT) return;
+
+    try {
+        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/tblTphXDvIezGmWae`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${AIRTABLE_PAT}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                records: [{
+                    fields: {
+                        'Name': `Script Failure: ${WORKFLOW_NAME}`,
+                        'Details': error.message || String(error),
+                        'Status': 'Todo',
+                        'Severity': 'High',
+                        'Context': 'Automated Script Error'
+                    }
+                }]
+            })
+        });
+        console.log('🐞 System Bug logged to Airtable.');
+    } catch (err) {
+        console.error('❌ Failed to log bug to Airtable:', err);
+    }
+}
+
 async function mineTrending() {
     console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
-    console.log(`   Fetching up to ${MAX_PAGES} pages of trending people (${MAX_PAGES * 20} max)\n`);
+    console.log(`   Fetching up to ${MAX_PAGES} pages of trending people\n`);
 
     const allPeople: any[] = [];
 
-    // Fetch trending people across multiple pages
     for (let page = 1; page <= MAX_PAGES; page++) {
-        const result = await fetchTmdbTrendingPeople(page);
-        if (!result?.results?.length) break;
+        try {
+            const result = await fetchTmdbTrendingPeople(page);
+            if (!result?.results?.length) break;
 
-        allPeople.push(...result.results);
-        console.log(`   Page ${page}/${result.total_pages}: fetched ${result.results.length} people`);
+            allPeople.push(...result.results);
+            console.log(`   Page ${page}/${result.total_pages}: fetched ${result.results.length} people`);
 
-        if (page >= result.total_pages) break;
-        await sleep(SLEEP_MS);
+            if (page >= result.total_pages) break;
+            await sleep(SLEEP_MS);
+        } catch (err: any) {
+            console.error(`   ❌ TMDb API Error on page ${page}: ${err.message}`);
+            throw err;
+        }
     }
 
     if (!allPeople.length) {
@@ -30,75 +64,45 @@ async function mineTrending() {
         return;
     }
 
-    console.log(`\n   Total trending people to process: ${allPeople.length}\n`);
+    console.log(`\n   Total trending people to process: ${allPeople.length}`);
 
-    let createdCount = 0, updatedCount = 0, skippedCount = 0;
+    const upsertData = allPeople.map(person => ({
+        type: 'TMDB',
+        identifier: String(person.id),
+        soc_tmdb: `https://www.themoviedb.org/person/${person.id}`,
+        name: person.name,
+        image: getImageUrl(person.profile_path),
+        detailed_array: {
+            known_for_department: person.known_for_department || null,
+            gender: person.gender ?? null,
+            known_for: person.known_for || [],
+            tmdb_popularity: person.popularity
+        },
+        updated_at: new Date().toISOString()
+    }));
 
-    for (let i = 0; i < allPeople.length; i++) {
-        const person = allPeople[i];
-        const tmdbId = String(person.id);
-        console.log(`[${i + 1}/${allPeople.length}] ${person.name} (TMDb ID: ${tmdbId}, Popularity: ${person.popularity})`);
+    console.log(`   Upserting ${upsertData.length} records to hb_socials...`);
+    
+    const CHUNK_SIZE = 100;
+    for (let i = 0; i < upsertData.length; i += CHUNK_SIZE) {
+        const chunk = upsertData.slice(i, i + CHUNK_SIZE);
+        const { error } = await supabase
+            .from('hb_socials')
+            .upsert(chunk, { onConflict: 'type,identifier' });
 
-        // Check if a TMDB social_profile already exists for this person
-        const { data: existing } = await supabase
-            .from('social_profiles')
-            .select('id, tmdb_popularity')
-            .eq('social_type', 'TMDB')
-            .eq('social_id', tmdbId)
-            .maybeSingle();
-
-        const profileImageUrl = getImageUrl(person.profile_path);
-        const tmdbUrl = `https://www.themoviedb.org/person/${tmdbId}`;
-
-        if (existing) {
-            // Update popularity and image if changed
-            const { error } = await supabase
-                .from('social_profiles')
-                .update({
-                    tmdb_popularity: person.popularity,
-                    social_image: profileImageUrl,
-                    last_checked: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', existing.id);
-
-            if (error) {
-                console.error(`   ❌ Update error: ${error.message}`);
-            } else {
-                updatedCount++;
-                console.log(`   🔄 Updated existing profile`);
-            }
+        if (error) {
+            console.error(`   ❌ Upsert error: ${error.message}`);
         } else {
-            // Create new TMDB social_profile — tmdb_check left null so social enrichment picks it up
-            const { error } = await supabase
-                .from('social_profiles')
-                .insert({
-                    social_type: 'TMDB',
-                    social_id: tmdbId,
-                    social_url: tmdbUrl,
-                    name: person.name,
-                    social_image: profileImageUrl,
-                    tmdb_popularity: person.popularity,
-                    tmdb_known_for: person.known_for_department || null,
-                    tmdb_gender: person.gender ?? null,
-                    status: 'active',
-                    last_checked: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                    workflow_logs: { created_by: WORKFLOW_NAME, created_at: new Date().toISOString() }
-                });
-
-            if (error) {
-                console.error(`   ❌ Insert error: ${error.message}`);
-                skippedCount++;
-            } else {
-                createdCount++;
-                console.log(`   ✨ Created new profile`);
-            }
+            console.log(`   ✅ Chunk ${Math.floor(i/CHUNK_SIZE) + 1} uploaded.`);
         }
     }
 
     const stats = getApiStats();
-    console.log(`\n🎉 Done! Created: ${createdCount}, Updated: ${updatedCount}, Skipped: ${skippedCount}, API Calls: ${stats.totalApiCalls}`);
+    console.log(`\n🎉 Done! API Success Rate: ${stats.successRate}% (${stats.totalApiCalls} calls)\n`);
 }
 
-mineTrending().catch(console.error);
+mineTrending().catch(async (error) => {
+    console.error('🔥 FATAL ERROR:', error);
+    await logSystemBug(error);
+    process.exit(1);
+});

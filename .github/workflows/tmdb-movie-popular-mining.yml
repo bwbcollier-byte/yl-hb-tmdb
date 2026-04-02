@@ -34,9 +34,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
-          LIMIT: ${{ github.event.inputs.limit || '0' }}
-          MINING_ENDPOINT: '/movie/popular'
-          MEDIA_TYPE: 'movie'
-          WORKFLOW_FILE: 'tmdb-movie-popular-mining.yml'
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          PAGES: ${{ github.event.inputs.max_pages || '5' }}
+          ENDPOINT: '/movie/popular'
+          CI: "true"
         run: npx ts-node src/tmdb-media-mining.ts

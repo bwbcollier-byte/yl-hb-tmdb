@@ -1,37 +1,71 @@
 import { supabase } from './supabase';
 import { fetchTmdbPerson, sleep, getApiStats, getImageUrl, SLEEP_MS } from './tmdb-api';
 import * as dotenv from 'dotenv';
+import fetch from 'node-fetch';
 dotenv.config();
 
 const LIMIT_ENV = process.env.LIMIT;
 const RUN_ALL = !LIMIT_ENV || LIMIT_ENV.trim() === '';
-const LIMIT = RUN_ALL ? 999999 : parseInt(LIMIT_ENV as string);
-const WORKFLOW_NAME = 'TMDb Social Enrichment';
+const LIMIT = RUN_ALL ? 1000 : parseInt(LIMIT_ENV as string);
+const WORKFLOW_NAME = 'TMDb Talent Social Enrichment';
+
+async function logSystemBug(error: any) {
+    const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
+    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appXXXXXXXXXXXXX';
+    if (!AIRTABLE_PAT) return;
+
+    try {
+        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/tblTphXDvIezGmWae`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${AIRTABLE_PAT}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                records: [{
+                    fields: {
+                        'Name': `Script Failure: ${WORKFLOW_NAME}`,
+                        'Details': error.message || String(error),
+                        'Status': 'Todo',
+                        'Severity': 'High',
+                        'Context': 'Automated Script Error'
+                    }
+                }]
+            })
+        });
+        console.log('🐞 System Bug logged to Airtable.');
+    } catch (err) {
+        console.error('❌ Failed to log bug to Airtable:', err);
+    }
+}
 
 async function upsertLinkedSocial(talentId: string, socialType: string, socialId: string, name: string) {
     if (!socialId || socialId.trim() === '') return;
 
-    // Construct URL based on type
-    let socialUrl = '';
-    if (socialType === 'Instagram') socialUrl = `https://www.instagram.com/${socialId}/`;
-    if (socialType === 'TikTok') socialUrl = `https://www.tiktok.com/@${socialId}`;
-    if (socialType === 'Twitter') socialUrl = `https://twitter.com/${socialId}`;
-    if (socialType === 'Facebook') socialUrl = `https://www.facebook.com/${socialId}`;
-    if (socialType === 'IMDb') socialUrl = `https://www.imdb.com/name/${socialId}/`;
+    let socColumn = '';
+    let socUrl = '';
+
+    if (socialType === 'Instagram') { socColumn = 'soc_instagram'; socUrl = `https://www.instagram.com/${socialId}/`; }
+    else if (socialType === 'TikTok') { socColumn = 'soc_tiktok'; socUrl = `https://www.tiktok.com/@${socialId}`; }
+    else if (socialType === 'Twitter') { socColumn = 'soc_twitter'; socUrl = `https://twitter.com/${socialId}`; }
+    else if (socialType === 'Facebook') { socColumn = 'soc_facebook'; socUrl = `https://www.facebook.com/${socialId}`; }
+    else if (socialType === 'IMDb') { socColumn = 'soc_imdb'; socUrl = `https://www.imdb.com/name/${socialId}/`; }
+
+    if (!socColumn) return;
+
+    const upsertPayload: any = {
+        talent_id: talentId,
+        type: socialType.toUpperCase(),
+        identifier: socialId,
+        name: name,
+        updated_at: new Date().toISOString()
+    };
+    
+    upsertPayload[socColumn] = socUrl;
 
     const { error } = await supabase
-        .from('social_profiles')
-        .upsert({
-            talent_id: talentId,
-            social_type: socialType,
-            social_id: socialId,
-            social_url: socialUrl,
-            name: name,
-            status: 'active',
-            updated_at: new Date().toISOString()
-        }, {
-            onConflict: 'talent_id, social_type'
-        });
+        .from('hb_socials')
+        .upsert(upsertPayload, { onConflict: 'type,identifier' });
 
     if (error) {
         console.error(`      ⚠️ Failed to upsert linked ${socialType}: ${error.message}`);
@@ -42,19 +76,20 @@ async function upsertLinkedSocial(talentId: string, socialType: string, socialId
 
 async function processProfiles() {
     console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
-    console.log(`   Limit: ${RUN_ALL ? 'All' : LIMIT} records\n`);
+    console.log(`   Limit: ${RUN_ALL ? 'All (cap 1000)' : LIMIT} records\n`);
 
-    // Fetch TMDB social profiles ordered so unprocessed ones come first
     const { data: profiles, error } = await supabase
-        .from('social_profiles')
-        .select('id, talent_id, social_id, social_url, name')
-        .eq('social_type', 'TMDB')
-        .order('tmdb_check', { ascending: true, nullsFirst: true })
-        .order('last_processed', { ascending: true, nullsFirst: true })
+        .from('hb_socials')
+        .select('*')
+        .eq('type', 'TMDB')
+        .order('updated_at', { ascending: true })
         .limit(LIMIT);
 
-    if (error) { console.error('❌ Fetch error:', error.message); return; }
-    if (!profiles?.length) { console.log('✅ No TMDB social profiles to process.'); return; }
+    if (error) throw error;
+    if (!profiles?.length) {
+        console.log('✅ No TMDB social profiles to process.');
+        return;
+    }
 
     console.log(`   Found ${profiles.length} TMDB social profiles.\n`);
 
@@ -62,16 +97,11 @@ async function processProfiles() {
 
     for (const profile of profiles) {
         processedCount++;
-        const personId = profile.social_id;
-        console.log(`[${processedCount}/${profiles.length}] Person ID: ${personId} — ${profile.name || profile.id}`);
+        const personId = profile.identifier;
+        console.log(`[${processedCount}/${profiles.length}] Identifier: ${personId} — ${profile.name || profile.id}`);
 
-        // Skip missing or non-numeric IDs (e.g. 'not.found' placeholder values)
         if (!personId || !/^\d+$/.test(String(personId))) {
-            console.log(`   ⏭️  Skipping invalid social_id: "${personId}"`);
-            await supabase
-                .from('social_profiles')
-                .update({ tmdb_check: 'invalid_id', last_checked: new Date().toISOString() })
-                .eq('id', profile.id);
+            console.log(`   ⏭️  Skipping invalid identifier: "${personId}"`);
             continue;
         }
 
@@ -79,48 +109,36 @@ async function processProfiles() {
 
         if (!data) {
             failedCount++;
-            await supabase
-                .from('social_profiles')
-                .update({ tmdb_check: 'not_found', last_checked: new Date().toISOString() })
-                .eq('id', profile.id);
+            await supabase.from('hb_socials').update({ updated_at: new Date().toISOString() }).eq('id', profile.id);
             continue;
         }
 
-        // Sort profile images by vote_average, take top 5
-        const profileImages = (data.images?.profiles || [])
-            .sort((a: any, b: any) => b.vote_average - a.vote_average)
-            .slice(0, 5)
-            .map((img: any) => getImageUrl(img.file_path))
-            .filter(Boolean);
-
-        const bestImage = getImageUrl(data.profile_path) || profileImages[0] || null;
-
-        const updates: Record<string, any> = {
+        const extIds = data.external_ids || {};
+        
+        const updates: any = {
             name: data.name || profile.name,
-            social_about: data.biography || null,
-            social_image: bestImage,
-            tmdb_check: 'success',
-            tmdb_birthday: data.birthday || null,
-            tmdb_deathday: data.deathday || null,
-            tmdb_gender: data.gender ?? null,
-            tmdb_known_for: data.known_for_department || null,
-            tmdb_place_of_birth: data.place_of_birth || null,
-            tmdb_popularity: data.popularity ?? null,
-            tmdb_imdb_id: data.external_ids?.imdb_id || data.imdb_id || null,
-            tmdb_instagram_id: data.external_ids?.instagram_id || null,
-            tmdb_twitter_id: data.external_ids?.twitter_id || null,
-            tmdb_facebook_id: data.external_ids?.facebook_id || null,
-            tmdb_tiktok_id: data.external_ids?.tiktok_id || null,
-            tmdb_wikidata_id: data.external_ids?.wikidata_id || null,
-            tmdb_images: profileImages.length > 0 ? JSON.stringify(profileImages) : null,
-            last_processed: new Date().toISOString(),
-            last_checked: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            workflow_logs: { last_run: new Date().toISOString(), workflow: WORKFLOW_NAME }
+            image: getImageUrl(data.profile_path),
+            soc_instagram: extIds.instagram_id ? `https://instagram.com/${extIds.instagram_id}` : null,
+            soc_twitter: extIds.twitter_id ? `https://twitter.com/${extIds.twitter_id}` : null,
+            soc_tiktok: extIds.tiktok_id ? `https://tiktok.com/@${extIds.tiktok_id}` : null,
+            soc_youtube: extIds.youtube_id ? `https://youtube.com/${extIds.youtube_id}/videos` : null,
+            soc_facebook: extIds.facebook_id ? `https://facebook.com/${extIds.facebook_id}` : null,
+            soc_wikidata_id: extIds.wikidata_id || null, // ADDED AS TOP LEVEL
+            detailed_array: {
+                ...(profile.detailed_array || {}),
+                biography: data.biography || null,
+                birthday: data.birthday || null,
+                deathday: data.deathday || null,
+                place_of_birth: data.place_of_birth || null,
+                known_for_department: data.known_for_department || null,
+                imdb_id: extIds.imdb_id || null,
+                tmdb_popularity: data.popularity
+            },
+            updated_at: new Date().toISOString()
         };
 
         const { error: updateError } = await supabase
-            .from('social_profiles')
+            .from('hb_socials')
             .update(updates)
             .eq('id', profile.id);
 
@@ -131,14 +149,12 @@ async function processProfiles() {
             successCount++;
             console.log(`   ✅ Enriched: ${data.name}`);
 
-            // Automatically link other social platforms discovered on TMDB
             if (profile.talent_id) {
-                const ex = data.external_ids || {};
-                await upsertLinkedSocial(profile.talent_id, 'Instagram', ex.instagram_id, data.name);
-                await upsertLinkedSocial(profile.talent_id, 'TikTok', ex.tiktok_id, data.name);
-                await upsertLinkedSocial(profile.talent_id, 'Twitter', ex.twitter_id, data.name);
-                await upsertLinkedSocial(profile.talent_id, 'Facebook', ex.facebook_id, data.name);
-                await upsertLinkedSocial(profile.talent_id, 'IMDb', ex.imdb_id || data.imdb_id, data.name);
+                if (extIds.instagram_id) await upsertLinkedSocial(profile.talent_id, 'Instagram', extIds.instagram_id, data.name);
+                if (extIds.tiktok_id) await upsertLinkedSocial(profile.talent_id, 'TikTok', extIds.tiktok_id, data.name);
+                if (extIds.twitter_id) await upsertLinkedSocial(profile.talent_id, 'Twitter', extIds.twitter_id, data.name);
+                if (extIds.facebook_id) await upsertLinkedSocial(profile.talent_id, 'Facebook', extIds.facebook_id, data.name);
+                if (extIds.imdb_id) await upsertLinkedSocial(profile.talent_id, 'IMDb', extIds.imdb_id, data.name);
             }
         }
 
@@ -149,5 +165,8 @@ async function processProfiles() {
     console.log(`\n🎉 Done! Processed: ${processedCount}, Success: ${successCount}, Failed: ${failedCount}, API Success Rate: ${stats.successRate}%`);
 }
 
-processProfiles().catch(console.error);
-
+processProfiles().catch(async (error) => {
+    console.error('🔥 FATAL ERROR:', error);
+    await logSystemBug(error);
+    process.exit(1);
+});
