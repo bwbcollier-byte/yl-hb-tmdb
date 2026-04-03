@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { fetchTmdbPopularPeople, sleep, getApiStats, getImageUrl, SLEEP_MS } from './tmdb-api';
+import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
 import fetch from 'node-fetch';
 dotenv.config();
@@ -9,7 +10,7 @@ const WORKFLOW_NAME = 'TMDb Popular Talent Mining';
 
 async function logSystemBug(error: any) {
     const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
-    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appXXXXXXXXXXXXX';
+    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appCGet4ar0zgtgyj';
     if (!AIRTABLE_PAT) return;
 
     try {
@@ -41,7 +42,11 @@ async function minePopular() {
     console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
     console.log(`   Fetching up to ${MAX_PAGES} pages of popular people (${MAX_PAGES * 20} max)\n`);
 
+    // HEARTBEAT: START
+    await updateWorkflowHeartbeat('Running', `Starting discovery: ${MAX_PAGES} pages requested.`);
+
     const allPeople: any[] = [];
+    let totalUpserted = 0;
 
     for (let page = 1; page <= MAX_PAGES; page++) {
         try {
@@ -55,12 +60,14 @@ async function minePopular() {
             await sleep(SLEEP_MS);
         } catch (err: any) {
             console.error(`   ❌ TMDb API Error on page ${page}: ${err.message}`);
-            throw err; // Caught by outer catch
+            throw err; 
         }
     }
 
     if (!allPeople.length) {
         console.log('✅ No popular people returned from TMDb.');
+        // HEARTBEAT: FINISH (No data)
+        await updateWorkflowHeartbeat('Ready', 'Success: No new records to process.');
         return;
     }
 
@@ -94,15 +101,21 @@ async function minePopular() {
             console.error(`   ❌ Upsert error: ${error.message}`);
         } else {
             console.log(`   ✅ Chunk ${Math.floor(i/CHUNK_SIZE) + 1} uploaded (${chunk.length} records).`);
+            totalUpserted += chunk.length;
         }
     }
 
     const stats = getApiStats();
     console.log(`\n🎉 Done! API Success Rate: ${stats.successRate}% (${stats.totalApiCalls} calls)\n`);
+
+    // HEARTBEAT: FINISH
+    await updateWorkflowHeartbeat('Ready', `Success: ${totalUpserted} records processed. API Success Rate: ${stats.successRate}%`);
 }
 
 minePopular().catch(async (error) => {
     console.error('🔥 FATAL ERROR:', error);
+    // HEARTBEAT: ERROR
+    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${error.message || String(error)}`);
     await logSystemBug(error);
     process.exit(1);
 });

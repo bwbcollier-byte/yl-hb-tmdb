@@ -36,6 +36,7 @@ jobs:
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
           AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_RECORD_ID: recyQTGYYyC7jHTS0
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
           MINING_ENDPOINT: '/tv/popular'

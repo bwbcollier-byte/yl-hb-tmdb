@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { fetchTmdbMediaMining, getImageUrl, sleep, getApiStats, SLEEP_MS } from './tmdb-api';
+import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
 import fetch from 'node-fetch';
 dotenv.config();
@@ -11,7 +12,7 @@ const WORKFLOW_NAME = `TMDb Media Mining (${process.env.WORKFLOW_FILE || ENDPOIN
 
 async function logSystemBug(error: any) {
     const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
-    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appXXXXXXXXXXXXX';
+    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appCGet4ar0zgtgyj';
     if (!AIRTABLE_PAT) return;
 
     try {
@@ -43,6 +44,11 @@ async function runMining() {
     console.log(`\n🚀 Starting ${WORKFLOW_NAME}`);
     console.log(`   Pages: ${PAGES}, Batch Size: ${BATCH_SIZE}\n`);
 
+    // HEARTBEAT: START
+    await updateWorkflowHeartbeat('Running', `Starting discovery: ${PAGES} pages requested.`);
+
+    let totalUpserted = 0;
+
     for (let page = 1; page <= PAGES; page++) {
         console.log(`\n📄 Processing Page ${page}/${PAGES}...`);
         const data = await fetchTmdbMediaMining(ENDPOINT, page);
@@ -62,7 +68,7 @@ async function runMining() {
             
             upsertBatch.push({
                 name: (isMovie ? item.title : item.name) || 'Unknown',
-                media_type: typeValue, // FIXED: Renamed to media_type
+                media_type: typeValue, 
                 soc_tmdb_id: String(tmdbId),
                 soc_tmdb: `https://www.themoviedb.org/${typeValue}/${tmdbId}`,
                 image: getImageUrl(item.poster_path),
@@ -86,6 +92,7 @@ async function runMining() {
                 console.error(`   ❌ Batch Upsert Error (Page ${page}):`, upsertError.message);
             } else {
                 console.log(`   ✅ Page ${page} Upserted: ${upsertBatch.length} records.`);
+                totalUpserted += upsertBatch.length;
             }
         }
 
@@ -94,10 +101,15 @@ async function runMining() {
 
     const stats = getApiStats();
     console.log(`\n🎉 Done! API Success Rate: ${stats.successRate}% (${stats.totalApiCalls} calls)\n`);
+
+    // HEARTBEAT: FINISH
+    await updateWorkflowHeartbeat('Ready', `Success: ${totalUpserted} records processed. API Success Rate: ${stats.successRate}%`);
 }
 
 runMining().catch(async (error) => {
     console.error('🔥 FATAL ERROR:', error);
+    // HEARTBEAT: ERROR
+    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${error.message || String(error)}`);
     await logSystemBug(error);
     process.exit(1);
 });

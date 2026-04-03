@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { fetchTmdbMovie, fetchTmdbTv, sleep, getApiStats, getImageUrl, SLEEP_MS } from './tmdb-api';
+import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
 import fetch from 'node-fetch';
 dotenv.config();
@@ -9,12 +10,9 @@ const RUN_ALL = !LIMIT_ENV || LIMIT_ENV.trim() === '';
 const LIMIT = RUN_ALL ? 1000 : parseInt(LIMIT_ENV as string);
 const WORKFLOW_NAME = 'TMDb Media Enrichment';
 
-/**
- * Rule #3: Log System Bug to Airtable on fatal script failure
- */
 async function logSystemBug(error: any) {
     const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
-    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appXXXXXXXXXXXXX';
+    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appCGet4ar0zgtgyj';
     if (!AIRTABLE_PAT) return;
 
     try {
@@ -46,7 +44,9 @@ async function processMedia() {
     console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
     console.log(`   Limit: ${RUN_ALL ? 'All (cap 1000)' : LIMIT} records\n`);
 
-    // Fetch media records that have a tmdb_id, processed first
+    // HEARTBEAT: START
+    await updateWorkflowHeartbeat('Running', `Starting enrichment: limit set to ${LIMIT} records.`);
+
     const { data: mediaRecords, error } = await supabase
         .from('media')
         .select('*')
@@ -57,6 +57,8 @@ async function processMedia() {
     if (error) throw error;
     if (!mediaRecords?.length) {
         console.log('✅ No media records with TMDb IDs to process.');
+        // HEARTBEAT: FINISH (No data)
+        await updateWorkflowHeartbeat('Ready', 'Success: No records found to enrich.');
         return;
     }
 
@@ -67,7 +69,6 @@ async function processMedia() {
     for (const record of mediaRecords) {
         processedCount++;
         const tmdbId = record.soc_tmdb_id;
-        // FIXED: Using media_type column
         const mediaType = record.media_type === 'tv' || record.soc_tmdb?.includes('/tv/') ? 'tv' : 'movie';
         
         console.log(`[${processedCount}/${mediaRecords.length}] TMDb ${mediaType} ID: ${tmdbId} — ${record.name}`);
@@ -85,7 +86,6 @@ async function processMedia() {
         const isMovie = mediaType !== 'tv';
         const extIds = data.external_ids || {};
 
-        // Cast mapping with Talent IDs
         const rawCast = (data.credits?.cast || []).slice(0, 15);
         const castTmdbIds = rawCast.map((c: any) => String(c.id));
         
@@ -166,10 +166,15 @@ async function processMedia() {
 
     const stats = getApiStats();
     console.log(`\n🎉 Done! Processed: ${processedCount}, Success: ${successCount}, Failed: ${failedCount}, API Success Rate: ${stats.successRate}%`);
+
+    // HEARTBEAT: FINISH
+    await updateWorkflowHeartbeat('Ready', `Success: Enriched ${successCount} titles. API Success Rate: ${stats.successRate}%`);
 }
 
 processMedia().catch(async (error) => {
     console.error('🔥 FATAL ERROR:', error);
+    // HEARTBEAT: ERROR
+    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${error.message || String(error)}`);
     await logSystemBug(error);
     process.exit(1);
 });

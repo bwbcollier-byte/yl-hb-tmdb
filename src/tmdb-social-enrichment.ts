@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { fetchTmdbPerson, sleep, getApiStats, getImageUrl, SLEEP_MS } from './tmdb-api';
+import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
 import fetch from 'node-fetch';
 dotenv.config();
@@ -11,7 +12,7 @@ const WORKFLOW_NAME = 'TMDb Talent Social Enrichment';
 
 async function logSystemBug(error: any) {
     const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
-    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appXXXXXXXXXXXXX';
+    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appCGet4ar0zgtgyj';
     if (!AIRTABLE_PAT) return;
 
     try {
@@ -78,6 +79,9 @@ async function processProfiles() {
     console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
     console.log(`   Limit: ${RUN_ALL ? 'All (cap 1000)' : LIMIT} records\n`);
 
+    // HEARTBEAT: START
+    await updateWorkflowHeartbeat('Running', `Starting social enrichment: limit set to ${LIMIT} profiles.`);
+
     const { data: profiles, error } = await supabase
         .from('hb_socials')
         .select('*')
@@ -88,6 +92,8 @@ async function processProfiles() {
     if (error) throw error;
     if (!profiles?.length) {
         console.log('✅ No TMDB social profiles to process.');
+        // HEARTBEAT: FINISH (No data)
+        await updateWorkflowHeartbeat('Ready', 'Success: No profiles found to enrich.');
         return;
     }
 
@@ -123,7 +129,7 @@ async function processProfiles() {
             soc_tiktok: extIds.tiktok_id ? `https://tiktok.com/@${extIds.tiktok_id}` : null,
             soc_youtube: extIds.youtube_id ? `https://youtube.com/${extIds.youtube_id}/videos` : null,
             soc_facebook: extIds.facebook_id ? `https://facebook.com/${extIds.facebook_id}` : null,
-            soc_wikidata_id: extIds.wikidata_id || null, // ADDED AS TOP LEVEL
+            soc_wikidata_id: extIds.wikidata_id || null, 
             detailed_array: {
                 ...(profile.detailed_array || {}),
                 biography: data.biography || null,
@@ -163,10 +169,15 @@ async function processProfiles() {
 
     const stats = getApiStats();
     console.log(`\n🎉 Done! Processed: ${processedCount}, Success: ${successCount}, Failed: ${failedCount}, API Success Rate: ${stats.successRate}%`);
+
+    // HEARTBEAT: FINISH
+    await updateWorkflowHeartbeat('Ready', `Success: Enriched ${successCount} profiles. API Success Rate: ${stats.successRate}%`);
 }
 
 processProfiles().catch(async (error) => {
     console.error('🔥 FATAL ERROR:', error);
+    // HEARTBEAT: ERROR
+    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${error.message || String(error)}`);
     await logSystemBug(error);
     process.exit(1);
 });

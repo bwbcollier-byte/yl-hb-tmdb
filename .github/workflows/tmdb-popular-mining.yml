@@ -36,6 +36,8 @@ jobs:
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
           AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_RECORD_ID: reci564vx1vj0DKii
+          WORKFLOW_FILE: tmdb-popular-mining.yml
           MAX_PAGES: ${{ github.event.inputs.max_pages || '10' }}
           CI: "true"
         run: npx ts-node src/tmdb-popular-mining.ts
