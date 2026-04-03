@@ -10,26 +10,24 @@ const TMDB_BEARER_TOKEN = process.env.TMDB_BEARER_TOKEN!;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-const COUNTRY_MAP: { [key: string]: string } = {
-    'USA': 'US', 'United States': 'US', 'United States of America': 'US',
-    'UK': 'GB', 'United Kingdom': 'GB', 'England': 'GB', 'Scotland': 'GB', 'Wales': 'GB',
-    'South Korea': 'KR', 'Korea, South': 'KR',
-    'China': 'CN', 'Japan': 'JP', 'France': 'FR', 'Germany': 'DE', 'Italy': 'IT', 'Spain': 'ES',
-    'Canada': 'CA', 'Australia': 'AU', 'Brazil': 'BR', 'India': 'IN', 'Mexico': 'MX',
-    'Russia': 'RU', 'Turkey': 'TR', 'Hong Kong': 'HK', 'Taiwan': 'TW', 'Thailand': 'TH'
-};
+let COUNTRIES_CACHE: { name: string, code: string }[] = [];
+
+async function loadCountries() {
+    if (COUNTRIES_CACHE.length > 0) return;
+    const { data } = await supabase.from('countries').select('name, country_code');
+    if (data) {
+        COUNTRIES_CACHE = data.map(c => ({ name: c.name, code: c.country_code }));
+    }
+}
 
 function parseCountryCode(placeOfBirth: string | null): string | null {
-    if (!placeOfBirth) return null;
-    const parts = placeOfBirth.split(',').map(p => p.trim());
-    const lastPart = parts[parts.length - 1];
+    if (!placeOfBirth || COUNTRIES_CACHE.length === 0) return null;
     
-    // Check direct map
-    if (COUNTRY_MAP[lastPart]) return COUNTRY_MAP[lastPart];
-    
-    // Check if any country name is contained in the string
-    for (const [name, code] of Object.entries(COUNTRY_MAP)) {
-        if (placeOfBirth.includes(name)) return code;
+    // Scan all cached countries for a match in the string
+    for (const country of COUNTRIES_CACHE) {
+        if (placeOfBirth.toLowerCase().includes(country.name.toLowerCase())) {
+            return country.code?.toUpperCase() || null;
+        }
     }
     
     return null;
@@ -71,8 +69,9 @@ async function getOrCreateSocial(type: string, identifier: string, name: string,
 async function run() {
     // HEARTBEAT: START
     await updateWorkflowHeartbeat('Running', 'Fetching popular talent and performing deep-dive profile scrapes to promote them to hb_talent.');
-
+    
     console.log('🎬 Starting TMDb Popular Talent Promotion Engine');
+    await loadCountries();
     
     // Set a safe limit for deep scrapes to avoid GitHub Action timeouts
     const maxPages = parseInt(process.env.MAX_PAGES || '3');

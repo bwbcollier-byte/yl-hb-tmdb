@@ -39,7 +39,4 @@ jobs:
           AIRTABLE_RECORD_ID: recTZXyqzIIfE5hMF
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
-          MINING_ENDPOINT: '/movie/now_playing'
-          MEDIA_TYPE: 'movie'
-          WORKFLOW_FILE: 'tmdb-movie-now-playing-mining.yml'
-        run: npx ts-node src/tmdb-media-mining.ts
+        run: npx ts-node src/tmdb-now-playing-mining.ts
