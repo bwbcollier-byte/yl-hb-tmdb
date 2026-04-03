@@ -76,7 +76,7 @@ async function minePopular() {
     const upsertData = allPeople.map(person => ({
         type: 'TMDB',
         identifier: String(person.id),
-        soc_tmdb: `https://www.themoviedb.org/person/${person.id}`,
+        social_url: `https://www.themoviedb.org/person/${person.id}`,
         name: person.name,
         image: getImageUrl(person.profile_path),
         detailed_array: {
@@ -99,6 +99,8 @@ async function minePopular() {
 
         if (error) {
             console.error(`   ❌ Upsert error: ${error.message}`);
+            // THROW to ensure heartbeats and system bugs are triggered correctly!
+            throw new Error(`Database Upsert Error (Chunk ${Math.floor(i/CHUNK_SIZE) + 1}): ${error.message}`);
         } else {
             console.log(`   ✅ Chunk ${Math.floor(i/CHUNK_SIZE) + 1} uploaded (${chunk.length} records).`);
             totalUpserted += chunk.length;
