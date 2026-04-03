@@ -101,34 +101,18 @@ async function run() {
             console.log(`👤 Processing: ${personSummary.name} (ID: ${personSummary.id})`);
             const p = await fetchFullProfile(personSummary.id) as any;
             
-            // 2. Prepare Talent Data - Populating ALL requested fields!
-            const talentPayload: any = {
+            // 2. Prepare Base Metadata Payload (Safe for Updates)
+            const talentBasePayload: any = {
                 name: p.name,
                 image: p.profile_path ? `https://image.tmdb.org/t/p/w500${p.profile_path}` : null,
                 status: 'Ready',
-                xatid: null,
-                spotify_id: null,
                 act_type: p.known_for_department,
                 gender: p.gender === 1 ? 'Female' : p.gender === 2 ? 'Male' : 'Unknown',
                 birth_location: p.place_of_birth,
                 biography: p.biography,
                 category: 'Film & Television',
                 birth_country: parseCountryCode(p.place_of_birth),
-                updated_at: new Date().toISOString(),
-                // UUID socials are left empty for now until provisioned
-                soc_spotify: null,
-                soc_instagram: null,
-                soc_allmusic: null,
-                soc_tiktok: null,
-                soc_facebook: null,
-                soc_soundcloud: null,
-                soc_deezer: null,
-                soc_twitter: null,
-                soc_songkick: null,
-                soc_wikipedia: null,
-                soc_imdb: null,
-                soc_tmdb: null,
-                contacts_updated: null
+                updated_at: new Date().toISOString()
             };
 
             // 3. Linkage Check via hb_socials
@@ -157,13 +141,16 @@ async function run() {
             }
 
             if (talentId) {
-                const { error: updateError } = await supabase.from('hb_talent').update(talentPayload).eq('id', talentId);
+                const { error: updateError } = await supabase.from('hb_talent').update(talentBasePayload).eq('id', talentId);
                 if (updateError) throw new Error(`Talent Update Error: ${updateError.message}`);
                 console.log(`   ✅ Updated existing Talent: ${talentId}`);
             } else {
                 const { data: newTalent, error: talentError } = await supabase
                     .from('hb_talent')
-                    .insert({                 ...talentPayload,
+                    .insert({                 
+                        ...talentBasePayload,
+                        xatid: null,
+                        spotify_id: null,
                         created_at: new Date().toISOString()
                     })
                     .select('id')
