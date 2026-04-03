@@ -19,7 +19,7 @@ async function fetchFullProfile(personId: number) {
         }
     });
     if (!response.ok) throw new Error(`TMDb API Error: ${response.statusText}`);
-    return response.json();
+    return response.json() as any;
 }
 
 async function getOrCreateSocial(type: string, identifier: string, name: string, url: string, talentId?: string) {
@@ -63,7 +63,7 @@ async function run() {
         });
         
         if (!response.ok) break;
-        const data = await response.json();
+        const data = await response.json() as any;
         allPeople = allPeople.concat(data.results);
         console.log(`   Fetched page ${page}/${data.total_pages}`);
     }
@@ -74,7 +74,7 @@ async function run() {
     for (const personSummary of allPeople) {
         try {
             console.log(`👤 Processing: ${personSummary.name} (ID: ${personSummary.id})`);
-            const p = await fetchFullProfile(personSummary.id);
+            const p = await fetchFullProfile(personSummary.id) as any;
             
             // 2. Prepare Talent Data - Populating ALL requested fields!
             const talentPayload: any = {
