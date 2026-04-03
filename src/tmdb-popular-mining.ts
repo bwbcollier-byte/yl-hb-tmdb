@@ -115,6 +115,21 @@ async function run() {
 
             let talentId = existingSocial?.talent_id;
 
+            // Fallback check by name
+            if (!talentId) {
+                const { data: existingByName } = await supabase
+                    .from('hb_talent')
+                    .select('id')
+                    .eq('name', p.name)
+                    .eq('category', 'Film & Television')
+                    .maybeSingle();
+                
+                if (existingByName) {
+                    talentId = existingByName.id;
+                    console.log(`   🕵️‍♂️ Found existing Talent by name: ${talentId}`);
+                }
+            }
+
             if (talentId) {
                 const { error: updateError } = await supabase.from('hb_talent').update(talentPayload).eq('id', talentId);
                 if (updateError) throw new Error(`Talent Update Error: ${updateError.message}`);
