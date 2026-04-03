@@ -30,7 +30,7 @@ async function getOrCreateSocial(type: string, identifier: string, name: string,
             identifier,
             name,
             social_url: url,
-            talent_id: talentId,
+            linked_talent: talentId,
             updated_at: new Date().toISOString()
         }, { onConflict: 'type,identifier' })
         .select('id')
@@ -107,12 +107,12 @@ async function run() {
             // 3. Linkage Check via hb_socials
             const { data: existingSocial } = await supabase
                 .from('hb_socials')
-                .select('talent_id')
+                .select('linked_talent')
                 .eq('type', 'TMDB')
                 .eq('identifier', String(p.id))
                 .maybeSingle();
 
-            let talentId = existingSocial?.talent_id;
+            let talentId = existingSocial?.linked_talent;
 
             // Fallback check by name
             if (!talentId) {
