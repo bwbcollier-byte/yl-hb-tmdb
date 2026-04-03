@@ -9,7 +9,9 @@ export async function updateWorkflowHeartbeat(status: 'Running' | 'Ready' | 'Err
     const RECORD_ID = process.env.AIRTABLE_RECORD_ID;
 
     if (!AIRTABLE_PAT || !RECORD_ID) {
-        console.warn('⚠️ Airtable heartbeat skipped: AIRTABLE_PAT or AIRTABLE_RECORD_ID missing.');
+        console.warn('⚠️ Airtable heartbeat skipped:');
+        if (!AIRTABLE_PAT) console.warn('   - Missing: AIRTABLE_PAT');
+        if (!RECORD_ID) console.warn('   - Missing: AIRTABLE_RECORD_ID');
         return;
     }
 
