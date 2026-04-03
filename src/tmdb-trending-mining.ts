@@ -10,6 +10,31 @@ const TMDB_BEARER_TOKEN = process.env.TMDB_BEARER_TOKEN!;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
+const COUNTRY_MAP: { [key: string]: string } = {
+    'USA': 'US', 'United States': 'US', 'United States of America': 'US',
+    'UK': 'GB', 'United Kingdom': 'GB', 'England': 'GB', 'Scotland': 'GB', 'Wales': 'GB',
+    'South Korea': 'KR', 'Korea, South': 'KR',
+    'China': 'CN', 'Japan': 'JP', 'France': 'FR', 'Germany': 'DE', 'Italy': 'IT', 'Spain': 'ES',
+    'Canada': 'CA', 'Australia': 'AU', 'Brazil': 'BR', 'India': 'IN', 'Mexico': 'MX',
+    'Russia': 'RU', 'Turkey': 'TR', 'Hong Kong': 'HK', 'Taiwan': 'TW', 'Thailand': 'TH'
+};
+
+function parseCountryCode(placeOfBirth: string | null): string | null {
+    if (!placeOfBirth) return null;
+    const parts = placeOfBirth.split(',').map(p => p.trim());
+    const lastPart = parts[parts.length - 1];
+    
+    // Check direct map
+    if (COUNTRY_MAP[lastPart]) return COUNTRY_MAP[lastPart];
+    
+    // Check if any country name is contained in the string
+    for (const [name, code] of Object.entries(COUNTRY_MAP)) {
+        if (placeOfBirth.includes(name)) return code;
+    }
+    
+    return null;
+}
+
 async function fetchFullProfile(personId: number) {
     const url = `https://api.themoviedb.org/3/person/${personId}?append_to_response=external_ids,images,combined_credits&language=en-US`;
     const response = await fetch(url, {
@@ -88,6 +113,7 @@ async function run() {
                 birth_location: p.place_of_birth,
                 biography: p.biography,
                 category: 'Film & Television',
+                birth_country: parseCountryCode(p.place_of_birth),
                 updated_at: new Date().toISOString(),
                 soc_spotify: null,
                 soc_instagram: null,
