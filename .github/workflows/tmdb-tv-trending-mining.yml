@@ -38,8 +38,6 @@ jobs:
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_RECORD_ID: recQZMwdc78cUeTFc
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
-          LIMIT: ${{ github.event.inputs.limit || '0' }}
           MINING_ENDPOINT: '/trending/tv/day'
           MEDIA_TYPE: 'tv'
-          WORKFLOW_FILE: 'tmdb-tv-trending-mining.yml'
         run: npx ts-node src/tmdb-media-mining.ts
