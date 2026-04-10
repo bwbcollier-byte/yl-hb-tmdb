@@ -45,6 +45,7 @@ jobs:
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           MINING_ENDPOINT: '/movie/now_playing'
           MEDIA_TYPE: 'movie'
+          WORKFLOW_ID: '242622476'
         run: npx ts-node --transpile-only src/tmdb-media-mining.ts
       - name: Notify Supabase — result
         if: always()

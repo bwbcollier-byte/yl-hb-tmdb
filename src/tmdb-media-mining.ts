@@ -1,5 +1,4 @@
 import { supabase } from './supabase';
-import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
@@ -8,6 +7,8 @@ const ENDPOINT     = process.env.MINING_ENDPOINT || '/movie/popular';
 const MAX_PAGES    = parseInt(process.env.MAX_PAGES || '5');
 const MEDIA_TYPE   = process.env.MEDIA_TYPE || (ENDPOINT.includes('/tv') ? 'tv' : 'movie');
 const SLEEP_MS     = parseInt(process.env.SLEEP_MS  || '150');
+const STALE_DAYS   = parseInt(process.env.STALE_DAYS || '3');
+const WORKFLOW_ID  = parseInt(process.env.WORKFLOW_ID || '0');
 const UPSERT_CHUNK = 5;
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -49,6 +50,44 @@ async function fetchTMDB(endpoint: string): Promise<any> {
 
 // ─── SUPABASE HELPERS ────────────────────────────────────────────────────────
 
+// Pre-load recently-updated TMDB media IDs so we skip re-processing stale entries
+async function loadRecentlyUpdatedMedia(): Promise<Set<string>> {
+    const set = new Set<string>();
+    const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+        const { data, error } = await supabase
+            .from('hb_media')
+            .select('soc_tmdb_id')
+            .gte('updated_at', cutoff)
+            .not('soc_tmdb_id', 'is', null)
+            .range(from, from + pageSize - 1);
+        if (error || !data?.length) break;
+        for (const row of data) if (row.soc_tmdb_id) set.add(row.soc_tmdb_id);
+        if (data.length < pageSize) break;
+        from += pageSize;
+    }
+    return set;
+}
+
+// Update the workflows table with run outcome and summary stats
+async function updateWorkflowSummary(
+    status: 'success' | 'failure',
+    summary: Record<string, unknown>,
+    durationSecs: number
+) {
+    if (!WORKFLOW_ID) return;
+    const { error } = await supabase.rpc('log_workflow_run', {
+        p_workflow_id:   WORKFLOW_ID,
+        p_status:        status,
+        p_duration_secs: durationSecs,
+        p_summary:       summary,
+    });
+    if (error) console.warn(`   ⚠️  Workflow summary update failed: ${error.message}`);
+    else console.log(`   📊 Workflow summary logged to Supabase`);
+}
+
 // Load all existing TMDB person IDs in one batch query — avoids N individual lookups
 async function loadTmdbPersonMap(): Promise<Map<string, string>> {
     const map = new Map<string, string>();
@@ -86,10 +125,14 @@ function countryCode(placeOfBirth: string | null): string | null {
 // ─── MAIN ────────────────────────────────────────────────────────────────────
 
 async function run() {
-    console.log(`🚀 TMDb Media Mining — ${ENDPOINT} (${MEDIA_TYPE}, ${MAX_PAGES} pages)`);
-    await updateWorkflowHeartbeat('Running', `Starting ${ENDPOINT}`);
+    const runStart = Date.now();
+    console.log(`🚀 TMDb Media Mining — ${ENDPOINT} (${MEDIA_TYPE}, max ${MAX_PAGES || 'all'} pages, stale after ${STALE_DAYS}d)`);
 
     await loadCountries();
+
+    // Pre-load recently-updated media IDs — skip any title processed within STALE_DAYS
+    const recentMedia = await loadRecentlyUpdatedMedia();
+    console.log(`   ⏭️  ${recentMedia.size} titles fresh (updated < ${STALE_DAYS}d ago) — will skip`);
 
     // Pre-load all known TMDB person IDs → talent UUIDs (1 batch query for the whole run)
     const tmdbPersonMap = await loadTmdbPersonMap();
@@ -99,7 +142,7 @@ async function run() {
     const personCache = new Map<number, string>(); // tmdb_person_id → talent_id
     for (const [id, talentId] of tmdbPersonMap) personCache.set(parseInt(id), talentId);
 
-    let totalMedia = 0, totalTalentNew = 0;
+    let totalMedia = 0, totalTalentNew = 0, totalSkipped = 0;
 
     // Fetch page 1 to discover total_pages, then cap at MAX_PAGES (0 = all)
     const sep = ENDPOINT.includes('?') ? '&' : '?';
@@ -118,6 +161,14 @@ async function run() {
         for (const item of items) {
             try {
                 const label = item.title || item.name;
+
+                // Skip if processed recently
+                if (recentMedia.has(String(item.id))) {
+                    console.log(`⏭️  ${label} (TMDB: ${item.id}) — skipped (fresh)`);
+                    totalSkipped++;
+                    continue;
+                }
+
                 console.log(`\n🏨 ${label} (TMDB: ${item.id})`);
 
                 // Full detail + credits in one API call
@@ -242,13 +293,21 @@ async function run() {
         }
     }
 
-    const summary = `${totalMedia} titles processed, ${totalTalentNew} new talent added`;
-    console.log(`\n🎉 Done! ${summary}`);
-    await updateWorkflowHeartbeat('Ready', summary);
+    const durationSecs = Math.round((Date.now() - runStart) / 1000);
+    const summaryObj = {
+        titles_processed: totalMedia,
+        titles_skipped:   totalSkipped,
+        new_talent_added: totalTalentNew,
+        pages_fetched:    pageLimit,
+        endpoint:         ENDPOINT,
+        run_at:           new Date().toISOString(),
+    };
+    console.log(`\n🎉 Done! ${totalMedia} processed, ${totalSkipped} skipped, ${totalTalentNew} new talent (${durationSecs}s)`);
+    await updateWorkflowSummary('success', summaryObj, durationSecs);
 }
 
 run().catch(async err => {
     console.error('🔥 Fatal:', err.message);
-    await updateWorkflowHeartbeat('Errors', err.message);
+    await updateWorkflowSummary('failure', { error: err.message, endpoint: ENDPOINT, run_at: new Date().toISOString() }, 0);
     process.exit(1);
 });

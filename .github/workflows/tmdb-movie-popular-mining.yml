@@ -42,12 +42,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_RECORD_ID: rechtdpr1yeAI295k
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           MINING_ENDPOINT: '/movie/popular'
           MEDIA_TYPE: 'movie'
+          WORKFLOW_ID: '242622477'
         run: npx ts-node --transpile-only src/tmdb-media-mining.ts
       - name: Notify Supabase — result
         if: always()
