@@ -3,12 +3,38 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 const TMDB_BEARER_TOKEN = process.env.TMDB_BEARER_TOKEN!;
-const ENDPOINT   = process.env.MINING_ENDPOINT || '/movie/popular';
-const MAX_PAGES  = parseInt(process.env.MAX_PAGES || '5');
-const MEDIA_TYPE = process.env.MEDIA_TYPE || (ENDPOINT.includes('/tv') ? 'tv' : 'movie');
-const SLEEP_MS   = parseInt(process.env.SLEEP_MS  || '150');
+const ENDPOINT     = process.env.MINING_ENDPOINT || '/movie/popular';
+const MAX_PAGES    = parseInt(process.env.MAX_PAGES || '5');
+const MEDIA_TYPE   = process.env.MEDIA_TYPE || (ENDPOINT.includes('/tv') ? 'tv' : 'movie');
+const SLEEP_MS     = parseInt(process.env.SLEEP_MS  || '150');
+const UPSERT_CHUNK = 5;
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+function chunk<T>(arr: T[], n: number): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+    return out;
+}
+
+async function batchUpsertSocials(rows: any[]): Promise<void> {
+    for (const batch of chunk(rows, UPSERT_CHUNK)) {
+        let attempts = 0;
+        while (attempts < 3) {
+            const { error } = await supabase
+                .from('hb_socials')
+                .upsert(batch, { onConflict: 'type,identifier' });
+            if (!error) break;
+            attempts++;
+            if (attempts >= 3) {
+                console.error(`   ⚠️  Social upsert failed after 3 attempts: ${error.message}`);
+            } else {
+                console.warn(`   ⚠️  Retrying social upsert (${attempts}/3)...`);
+                await sleep(1000 * attempts);
+            }
+        }
+    }
+}
 
 // ─── TMDB ────────────────────────────────────────────────────────────────────
 
@@ -187,13 +213,8 @@ async function run() {
                     }
                 }
 
-                // ── Batch upsert all socials for this title (1 DB call) ──────
-                if (socialsQueue.length > 0) {
-                    const { error: socErr } = await supabase
-                        .from('hb_socials')
-                        .upsert(socialsQueue, { onConflict: 'type,identifier' });
-                    if (socErr) console.error(`   ⚠️  Socials batch error: ${socErr.message}`);
-                }
+                // ── Batch upsert socials in small chunks ────────────────────
+                if (socialsQueue.length > 0) await batchUpsertSocials(socialsQueue);
 
                 // ── Link talent to media ─────────────────────────────────────
                 if (talentIds.length > 0) {
