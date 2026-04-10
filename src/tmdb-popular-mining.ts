@@ -85,8 +85,9 @@ async function run() {
     console.log(`   ✅ Pre-loaded ${tmdbPersonMap.size} existing TMDB person records\n`);
 
     // ── Fetch all popular people pages ──────────────────────────────────────
-    const firstPage = await fetchTMDB(`/person/popular?language=en-US&page=1`);
-    const pageLimit = Math.min(MAX_PAGES, firstPage.total_pages ?? 1);
+    const firstPage  = await fetchTMDB(`/person/popular?language=en-US&page=1`);
+    const discovered = firstPage.total_pages ?? 1;
+    const pageLimit  = MAX_PAGES > 0 ? Math.min(MAX_PAGES, discovered) : discovered;
     let allPeople: any[] = firstPage.results ?? [];
     console.log(`   📋 Fetching ${pageLimit} pages (${firstPage.total_results} total available)\n`);
 
