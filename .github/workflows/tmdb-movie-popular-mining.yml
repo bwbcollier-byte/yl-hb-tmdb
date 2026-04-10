@@ -6,13 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "Max pages to fetch"
+        description: "Max pages to fetch (0 = all available)"
         required: false
         default: "5"
-      limit:
-        description: "Max records to process over all pages"
-        required: false
-        default: "0"
 
 jobs:
   enrich:

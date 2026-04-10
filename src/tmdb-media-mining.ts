@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
@@ -86,6 +87,7 @@ function countryCode(placeOfBirth: string | null): string | null {
 
 async function run() {
     console.log(`🚀 TMDb Media Mining — ${ENDPOINT} (${MEDIA_TYPE}, ${MAX_PAGES} pages)`);
+    await updateWorkflowHeartbeat('Running', `Starting ${ENDPOINT}`);
 
     await loadCountries();
 
@@ -240,10 +242,13 @@ async function run() {
         }
     }
 
-    console.log(`\n🎉 Done! ${totalMedia} titles processed, ${totalTalentNew} new talent added`);
+    const summary = `${totalMedia} titles processed, ${totalTalentNew} new talent added`;
+    console.log(`\n🎉 Done! ${summary}`);
+    await updateWorkflowHeartbeat('Ready', summary);
 }
 
-run().catch(err => {
+run().catch(async err => {
     console.error('🔥 Fatal:', err.message);
+    await updateWorkflowHeartbeat('Errors', err.message);
     process.exit(1);
 });
