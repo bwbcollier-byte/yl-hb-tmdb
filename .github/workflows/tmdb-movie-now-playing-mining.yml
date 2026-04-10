@@ -6,13 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "Max pages to fetch"
+        description: "Max pages to fetch (default: 1)"
         required: false
-        default: "5"
-      limit:
-        description: "Max records to process over all pages"
-        required: false
-        default: "0"
+        default: "1"
 
 jobs:
   enrich:
@@ -45,11 +41,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_RECORD_ID: recTZXyqzIIfE5hMF
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
-          LIMIT: ${{ github.event.inputs.limit || '0' }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '1' }}
         run: npx ts-node src/tmdb-now-playing-mining.ts
       - name: Notify Supabase — result
         if: always()
