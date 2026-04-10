@@ -1,204 +1,191 @@
-import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
-import { updateWorkflowHeartbeat } from './airtable-heartbeat';
-
+import { supabase } from './supabase';
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY!;
 const TMDB_BEARER_TOKEN = process.env.TMDB_BEARER_TOKEN!;
+const MAX_PAGES   = parseInt(process.env.MAX_PAGES   || '10');
+const SLEEP_MS    = parseInt(process.env.SLEEP_MS    || '150');
+const WORKFLOW_ID = parseInt(process.env.WORKFLOW_ID || '0');
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-let COUNTRIES_CACHE: { name: string, code: string }[] = [];
+// ─── SUPABASE WORKFLOW SUMMARY ───────────────────────────────────────────────
 
-async function loadCountries() {
-    if (COUNTRIES_CACHE.length > 0) return;
-    const { data } = await supabase.from('countries').select('name, country_code');
-    if (data) {
-        COUNTRIES_CACHE = data.map(c => ({ name: c.name, code: c.country_code }));
-    }
-}
-
-function parseCountryCode(placeOfBirth: string | null): string | null {
-    if (!placeOfBirth || COUNTRIES_CACHE.length === 0) return null;
-    
-    // Scan all cached countries for a match in the string
-    for (const country of COUNTRIES_CACHE) {
-        if (placeOfBirth.toLowerCase().includes(country.name.toLowerCase())) {
-            return country.code?.toUpperCase() || null;
-        }
-    }
-    
-    return null;
-}
-
-async function fetchFullProfile(personId: number) {
-    const url = `https://api.themoviedb.org/3/person/${personId}?append_to_response=external_ids,images,combined_credits&language=en-US`;
-    const response = await fetch(url, {
-        headers: {
-            Authorization: `Bearer ${TMDB_BEARER_TOKEN}`,
-            accept: 'application/json'
-        }
+async function updateWorkflowSummary(
+    status: 'success' | 'failure',
+    summary: Record<string, unknown>,
+    durationSecs: number
+) {
+    if (!WORKFLOW_ID) return;
+    const { error } = await supabase.rpc('log_workflow_run', {
+        p_workflow_id:   WORKFLOW_ID,
+        p_status:        status,
+        p_duration_secs: durationSecs,
+        p_summary:       summary,
     });
-    if (!response.ok) throw new Error(`TMDb API Error: ${response.statusText}`);
-    return response.json() as any;
+    if (error) console.warn(`   ⚠️  Workflow summary update failed: ${error.message}`);
+    else console.log(`   📊 Workflow summary logged to Supabase`);
 }
 
-async function getOrCreateSocial(type: string, identifier: string, name: string, url: string, talentId?: string) {
-    const { data, error } = await supabase
-        .from('hb_socials')
-        .upsert({
-            type,
-            identifier,
-            name,
-            social_url: url,
-            linked_talent: talentId,
-            updated_at: new Date().toISOString()
-        }, { onConflict: 'type,identifier' })
-        .select('id')
-        .single();
+// ─── TMDB ────────────────────────────────────────────────────────────────────
 
-    if (error) {
-        console.error(`   ❌ Social Error (${type}): ${error.message}`);
-        return null;
+async function fetchTMDB(endpoint: string): Promise<any> {
+    const res = await fetch(`https://api.themoviedb.org/3${endpoint}`, {
+        headers: { Authorization: `Bearer ${TMDB_BEARER_TOKEN}`, accept: 'application/json' }
+    });
+    if (!res.ok) throw new Error(`TMDB ${res.status}: ${res.statusText} — ${endpoint}`);
+    return res.json();
+}
+
+// ─── COUNTRIES ───────────────────────────────────────────────────────────────
+
+let COUNTRIES: { name: string; code: string }[] = [];
+async function loadCountries() {
+    if (COUNTRIES.length) return;
+    const { data } = await supabase.from('countries').select('name, country_code');
+    if (data) COUNTRIES = data.map(c => ({ name: c.name, code: c.country_code }));
+}
+function countryCode(placeOfBirth: string | null): string | null {
+    if (!placeOfBirth || !COUNTRIES.length) return null;
+    const lower = placeOfBirth.toLowerCase();
+    return COUNTRIES.find(c => lower.includes(c.name.toLowerCase()))?.code?.toUpperCase() ?? null;
+}
+
+// ─── PRE-LOAD TMDB PERSON MAP ────────────────────────────────────────────────
+
+async function loadTmdbPersonMap(): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+        const { data, error } = await supabase
+            .from('hb_socials')
+            .select('identifier, linked_talent')
+            .eq('type', 'TMDB')
+            .not('linked_talent', 'is', null)
+            .range(from, from + pageSize - 1);
+        if (error || !data?.length) break;
+        for (const row of data) map.set(row.identifier, row.linked_talent);
+        if (data.length < pageSize) break;
+        from += pageSize;
     }
-    return data.id;
+    return map;
 }
+
+// ─── MAIN ────────────────────────────────────────────────────────────────────
 
 async function run() {
-    // HEARTBEAT: START
-    await updateWorkflowHeartbeat('Running', 'Fetching popular talent and performing deep-dive profile scrapes to promote them to hb_talent.');
-    
-    console.log('🎬 Starting TMDb Popular Talent Promotion Engine');
-    await loadCountries();
-    
-    // Set a safe limit for deep scrapes to avoid GitHub Action timeouts
-    const maxPages = parseInt(process.env.MAX_PAGES || '3');
-    let allPeople: any[] = [];
+    const runStart = Date.now();
+    console.log(`🎬 TMDb Popular Talent Mining — ${MAX_PAGES} pages (${MAX_PAGES * 20} people)\n`);
 
-    for (let page = 1; page <= maxPages; page++) {
-        const url = `https://api.themoviedb.org/3/person/popular?language=en-US&page=${page}`;
-        const response = await fetch(url, {
-            headers: {
-                Authorization: `Bearer ${TMDB_BEARER_TOKEN}`,
-                accept: 'application/json'
-            }
-        });
-        
-        if (!response.ok) break;
-        const data = await response.json() as any;
-        allPeople = allPeople.concat(data.results);
-        console.log(`   Fetched page ${page}/${data.total_pages}`);
+    await loadCountries();
+
+    // Pre-load all known TMDB person IDs in one bulk query
+    const tmdbPersonMap = await loadTmdbPersonMap();
+    console.log(`   ✅ Pre-loaded ${tmdbPersonMap.size} existing TMDB person records\n`);
+
+    // ── Fetch all popular people pages ──────────────────────────────────────
+    const firstPage = await fetchTMDB(`/person/popular?language=en-US&page=1`);
+    const pageLimit = Math.min(MAX_PAGES, firstPage.total_pages ?? 1);
+    let allPeople: any[] = firstPage.results ?? [];
+    console.log(`   📋 Fetching ${pageLimit} pages (${firstPage.total_results} total available)\n`);
+
+    for (let page = 2; page <= pageLimit; page++) {
+        const data = await fetchTMDB(`/person/popular?language=en-US&page=${page}`);
+        allPeople = allPeople.concat(data.results ?? []);
+        await sleep(SLEEP_MS);
     }
 
-    console.log(`\n🔍 Found ${allPeople.length} people. Starting Deep Profile Scrapes...\n`);
-    let promotedCount = 0;
+    console.log(`🔍 Processing ${allPeople.length} people...\n`);
+
+    let updatedCount = 0, createdCount = 0, errorCount = 0;
 
     for (const personSummary of allPeople) {
         try {
-            console.log(`👤 Processing: ${personSummary.name} (ID: ${personSummary.id})`);
-            const p = await fetchFullProfile(personSummary.id) as any;
-            
-            // 2. Prepare Base Metadata Payload (Safe for Updates)
-            const talentBasePayload: any = {
-                name: p.name,
-                image: p.profile_path ? `https://image.tmdb.org/t/p/w500${p.profile_path}` : null,
-                status: 'Ready',
-                act_type: p.known_for_department,
-                gender: p.gender === 1 ? 'Female' : p.gender === 2 ? 'Male' : 'Unknown',
-                birth_location: p.place_of_birth,
-                biography: p.biography,
-                category: 'Film & Television',
-                birth_country: parseCountryCode(p.place_of_birth),
-                updated_at: new Date().toISOString()
+            console.log(`👤 ${personSummary.name} (TMDB: ${personSummary.id})`);
+
+            // Full profile — no combined_credits (large payload, never used)
+            const p = await fetchTMDB(
+                `/person/${personSummary.id}?append_to_response=external_ids&language=en-US`
+            );
+            await sleep(SLEEP_MS);
+
+            const talentPayload: any = {
+                name:           p.name,
+                image:          p.profile_path ? `https://image.tmdb.org/t/p/w500${p.profile_path}` : null,
+                status:         'Ready',
+                act_type:       p.known_for_department || 'Acting',
+                gender:         p.gender === 1 ? 'Female' : p.gender === 2 ? 'Male' : 'Unknown',
+                birth_location: p.place_of_birth  || null,
+                biography:      p.biography       || null,
+                category:       'Film & Television',
+                birth_country:  countryCode(p.place_of_birth),
+                updated_at:     new Date().toISOString(),
             };
 
-            // 3. Linkage Check via hb_socials
-            const { data: existingSocial } = await supabase
-                .from('hb_socials')
-                .select('linked_talent')
-                .eq('type', 'TMDB')
-                .eq('identifier', String(p.id))
-                .maybeSingle();
-
-            let talentId = existingSocial?.linked_talent;
-
-            // Fallback check by name
-            if (!talentId) {
-                const { data: existingByName } = await supabase
-                    .from('hb_talent')
-                    .select('id')
-                    .eq('name', p.name)
-                    .eq('category', 'Film & Television')
-                    .maybeSingle();
-                
-                if (existingByName) {
-                    talentId = existingByName.id;
-                    console.log(`   🕵️‍♂️ Found existing Talent by name: ${talentId}`);
-                }
-            }
+            // ── Upsert hb_talent ──────────────────────────────────────────────
+            let talentId = tmdbPersonMap.get(String(p.id)) ?? null;
 
             if (talentId) {
-                const { error: updateError } = await supabase.from('hb_talent').update(talentBasePayload).eq('id', talentId);
-                if (updateError) throw new Error(`Talent Update Error: ${updateError.message}`);
-                console.log(`   ✅ Updated existing Talent: ${talentId}`);
+                await supabase.from('hb_talent').update(talentPayload).eq('id', talentId);
+                console.log(`   ✅ Updated: ${talentId}`);
+                updatedCount++;
             } else {
-                const { data: newTalent, error: talentError } = await supabase
+                const { data: newT, error: insertErr } = await supabase
                     .from('hb_talent')
-                    .insert({                 
-                        ...talentBasePayload,
-                        xatid: null,
-                        spotify_id: null,
-                        created_at: new Date().toISOString()
-                    })
+                    .insert({ ...talentPayload, created_at: new Date().toISOString() })
                     .select('id')
                     .single();
-                
-                if (talentError) throw new Error(`Talent Insert Error: ${talentError.message}`);
-                talentId = newTalent.id;
-                console.log(`   ✨ Created new Talent: ${talentId}`);
+                if (insertErr) throw new Error(`Insert failed: ${insertErr.message}`);
+                talentId = newT.id;
+                console.log(`   ✨ Created: ${talentId}`);
+                createdCount++;
             }
 
-            // 4. Provision All Socials and Link them to this Talent ID
-            const socialsToProvision = [
-                { type: 'TMDB', id: String(p.id), url: `https://www.themoviedb.org/person/${p.id}`, field: 'soc_tmdb' },
-                { type: 'INSTAGRAM', id: p.external_ids?.instagram_id, url: p.external_ids?.instagram_id ? `https://instagram.com/${p.external_ids.instagram_id}` : null, field: 'soc_instagram' },
-                { type: 'TIKTOK', id: p.external_ids?.tiktok_id, url: p.external_ids?.tiktok_id ? `https://tiktok.com/@${p.external_ids.tiktok_id}` : null, field: 'soc_tiktok' },
-                { type: 'FACEBOOK', id: p.external_ids?.facebook_id, url: p.external_ids?.facebook_id ? `https://facebook.com/${p.external_ids.facebook_id}` : null, field: 'soc_facebook' },
-                { type: 'TWITTER', id: p.external_ids?.twitter_id, url: p.external_ids?.twitter_id ? `https://twitter.com/${p.external_ids.twitter_id}` : null, field: 'soc_twitter' },
-                { type: 'IMDB', id: p.external_ids?.imdb_id, url: p.external_ids?.imdb_id ? `https://imdb.com/name/${p.external_ids.imdb_id}` : null, field: 'soc_imdb' },
-                { type: 'WIKIPEDIA', id: p.external_ids?.wikidata_id, url: p.external_ids?.wikidata_id ? `https://www.wikidata.org/wiki/${p.external_ids.wikidata_id}` : null, field: 'soc_wikipedia' }
+            // ── Batch upsert all socials for this person ──────────────────────
+            const ext = p.external_ids ?? {};
+            const now = new Date().toISOString();
+            const socials = [
+                { type: 'TMDB',      identifier: String(p.id),          name: p.name, social_url: `https://www.themoviedb.org/person/${p.id}`,      linked_talent: talentId, updated_at: now },
+                ...(ext.imdb_id      ? [{ type: 'IMDB',      identifier: ext.imdb_id,      name: p.name, social_url: `https://imdb.com/name/${ext.imdb_id}/`,            linked_talent: talentId, updated_at: now }] : []),
+                ...(ext.instagram_id ? [{ type: 'INSTAGRAM', identifier: ext.instagram_id, name: p.name, social_url: `https://instagram.com/${ext.instagram_id}`,         linked_talent: talentId, updated_at: now }] : []),
+                ...(ext.tiktok_id    ? [{ type: 'TIKTOK',    identifier: ext.tiktok_id,    name: p.name, social_url: `https://tiktok.com/@${ext.tiktok_id}`,              linked_talent: talentId, updated_at: now }] : []),
+                ...(ext.twitter_id   ? [{ type: 'TWITTER',   identifier: ext.twitter_id,   name: p.name, social_url: `https://twitter.com/${ext.twitter_id}`,             linked_talent: talentId, updated_at: now }] : []),
+                ...(ext.facebook_id  ? [{ type: 'FACEBOOK',  identifier: ext.facebook_id,  name: p.name, social_url: `https://facebook.com/${ext.facebook_id}`,           linked_talent: talentId, updated_at: now }] : []),
+                ...(ext.wikidata_id  ? [{ type: 'WIKIDATA',  identifier: ext.wikidata_id,  name: p.name, social_url: `https://www.wikidata.org/wiki/${ext.wikidata_id}`,  linked_talent: talentId, updated_at: now }] : []),
             ];
 
-            const linkedIds: any = {};
-            for (const s of socialsToProvision) {
-                if (s.id && s.url && s.id !== "") {
-                    const uuid = await getOrCreateSocial(s.type, s.id, p.name, s.url, talentId);
-                    if (uuid) linkedIds[s.field] = uuid;
-                }
+            const { error: socialsErr } = await supabase
+                .from('hb_socials')
+                .upsert(socials, { onConflict: 'type,identifier' });
+            if (socialsErr) console.warn(`   ⚠️  Socials upsert: ${socialsErr.message}`);
+            else {
+                // Update the person map so later pages benefit from this run
+                tmdbPersonMap.set(String(p.id), talentId);
+                console.log(`   🔗 ${socials.length} socials upserted`);
             }
 
-            // 5. Final Connection: Update hb_talent with all the social UUIDs
-            if (Object.keys(linkedIds).length > 0) {
-                await supabase.from('hb_talent').update(linkedIds).eq('id', talentId);
-                console.log(`   🔗 Linked ${Object.keys(linkedIds).length} socials to Talent Profile.`);
-            }
-
-            promotedCount++;
         } catch (err: any) {
-            console.error(`   ❌ Error processing person: ${err.message}`);
+            console.error(`   ❌ ${personSummary.name}: ${err.message}`);
+            errorCount++;
         }
     }
 
-    console.log(`\n🎉 Promotion Complete! ${promotedCount}/${allPeople.length} people processed.\n`);
-
-    // HEARTBEAT: FINISH
-    await updateWorkflowHeartbeat('Ready', `Success: ${promotedCount} talent discovered and officially promoted to hb_talent with full deep-dive metadata.`);
+    const durationSecs = Math.round((Date.now() - runStart) / 1000);
+    const summaryObj = {
+        people_processed: allPeople.length,
+        talent_updated:   updatedCount,
+        talent_created:   createdCount,
+        errors:           errorCount,
+        pages_fetched:    pageLimit,
+        run_at:           new Date().toISOString(),
+    };
+    console.log(`\n🎉 Done! ${updatedCount} updated, ${createdCount} new, ${errorCount} errors (${durationSecs}s)`);
+    await updateWorkflowSummary('success', summaryObj, durationSecs);
 }
 
 run().catch(async (err) => {
-    console.error('Fatal execution error:', err);
-    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${err.message}`);
+    console.error('🔥 Fatal:', err.message);
+    await updateWorkflowSummary('failure', { error: err.message, run_at: new Date().toISOString() }, 0);
     process.exit(1);
 });
