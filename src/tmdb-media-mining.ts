@@ -9,7 +9,7 @@ const MEDIA_TYPE   = process.env.MEDIA_TYPE || (ENDPOINT.includes('/tv') ? 'tv' 
 const SLEEP_MS     = parseInt(process.env.SLEEP_MS  || '150');
 const STALE_DAYS   = parseInt(process.env.STALE_DAYS || '3');
 const WORKFLOW_ID  = parseInt(process.env.WORKFLOW_ID || '0');
-const UPSERT_CHUNK = 5;
+const UPSERT_CHUNK = 25;
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -50,7 +50,9 @@ async function fetchTMDB(endpoint: string): Promise<any> {
 
 // ─── SUPABASE HELPERS ────────────────────────────────────────────────────────
 
-// Pre-load recently-updated TMDB media IDs so we skip re-processing stale entries
+// Pre-load recently-mined TMDB media IDs so we skip re-processing fresh entries.
+// Uses check_tmdb_mining (dedicated mining timestamp) rather than updated_at
+// so unrelated updates to a row don't accidentally reset its staleness clock.
 async function loadRecentlyUpdatedMedia(): Promise<Set<string>> {
     const set = new Set<string>();
     const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -60,7 +62,7 @@ async function loadRecentlyUpdatedMedia(): Promise<Set<string>> {
         const { data, error } = await supabase
             .from('hb_media')
             .select('soc_tmdb_id')
-            .gte('updated_at', cutoff)
+            .gte('check_tmdb_mining', cutoff)
             .not('soc_tmdb_id', 'is', null)
             .range(from, from + pageSize - 1);
         if (error || !data?.length) break;
@@ -192,9 +194,10 @@ async function run() {
                         soc_imdb:     detail.external_ids?.imdb_id
                                         ? `https://www.imdb.com/title/${detail.external_ids.imdb_id}/`
                                         : null,
-                        media_type:   MEDIA_TYPE,
-                        credits:      detail.credits ?? null,
-                        updated_at:   new Date().toISOString(),
+                        media_type:          MEDIA_TYPE,
+                        credits:             detail.credits ?? null,
+                        check_tmdb_mining:   new Date().toISOString(),
+                        updated_at:          new Date().toISOString(),
                     }, { onConflict: 'soc_tmdb_id' })
                     .select('id')
                     .single();
