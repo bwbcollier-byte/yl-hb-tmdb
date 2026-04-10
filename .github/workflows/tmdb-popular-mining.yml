@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "Pages to fetch (20 people/page, 0 = all available)"
+        description: "Pages to fetch (20 people/page)"
         required: false
-        default: "10"
+        default: "50"
         type: string
 
 jobs:
@@ -47,7 +47,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '10' }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '50' }}
           WORKFLOW_ID: '242604814'
         run: npx ts-node --transpile-only src/tmdb-popular-mining.ts
 
