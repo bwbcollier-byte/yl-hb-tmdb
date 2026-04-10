@@ -1,54 +1,48 @@
 import { supabase } from './supabase';
 import { fetchTmdbMovie, fetchTmdbTv, sleep, getApiStats, getImageUrl, SLEEP_MS } from './tmdb-api';
-import { updateWorkflowHeartbeat } from './airtable-heartbeat';
 import * as dotenv from 'dotenv';
-import fetch from 'node-fetch';
 dotenv.config();
 
 const LIMIT_ENV = process.env.LIMIT;
-const RUN_ALL = !LIMIT_ENV || LIMIT_ENV.trim() === '';
-const LIMIT = RUN_ALL ? 1000 : parseInt(LIMIT_ENV as string);
-const WORKFLOW_NAME = 'TMDb Media Enrichment';
+const RUN_ALL   = !LIMIT_ENV || LIMIT_ENV.trim() === '';
+const LIMIT     = RUN_ALL ? 1000 : parseInt(LIMIT_ENV as string);
+const WORKFLOW_ID = parseInt(process.env.WORKFLOW_ID || '0');
 
-async function logSystemBug(error: any) {
-    const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
-    const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appCGet4ar0zgtgyj';
-    if (!AIRTABLE_PAT) return;
+// ─── SUPABASE WORKFLOW SUMMARY ───────────────────────────────────────────────
 
-    try {
-        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/tblTphXDvIezGmWae`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${AIRTABLE_PAT}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                records: [{
-                    fields: {
-                        'Name': `Script Failure: ${WORKFLOW_NAME}`,
-                        'Details': error.message || String(error),
-                        'Status': 'Todo',
-                        'Severity': 'High',
-                        'Context': 'Automated Script Error'
-                    }
-                }]
-            })
-        });
-        console.log('🐞 System Bug logged to Airtable.');
-    } catch (err) {
-        console.error('❌ Failed to log bug to Airtable:', err);
+async function updateWorkflowSummary(
+    status: 'success' | 'failure',
+    summary: Record<string, unknown>,
+    durationSecs: number,
+    lastError?: string
+) {
+    if (!WORKFLOW_ID) return;
+    const { error } = await supabase.rpc('log_workflow_run', {
+        p_workflow_id:   WORKFLOW_ID,
+        p_status:        status,
+        p_duration_secs: durationSecs,
+        p_summary:       summary,
+    });
+    if (error) console.warn(`   ⚠️  Workflow summary update failed: ${error.message}`);
+
+    // Write last_error separately if provided
+    if (lastError) {
+        await supabase
+            .from('workflows')
+            .update({ last_error: lastError, updated_at: new Date().toISOString() })
+            .eq('github_workflow_id', WORKFLOW_ID);
     }
 }
 
+// ─── MAIN ────────────────────────────────────────────────────────────────────
+
 async function processMedia() {
-    console.log(`\n🎬 Starting ${WORKFLOW_NAME}`);
+    const runStart = Date.now();
+    console.log(`\n🎬 TMDb Media Profile Enrichment`);
     console.log(`   Limit: ${RUN_ALL ? 'All (cap 1000)' : LIMIT} records\n`);
 
-    // HEARTBEAT: START
-    await updateWorkflowHeartbeat('Running', `Starting enrichment: limit set to ${LIMIT} records.`);
-
     const { data: mediaRecords, error } = await supabase
-        .from('media')
+        .from('hb_media')
         .select('*')
         .not('soc_tmdb_id', 'is', null)
         .order('updated_at', { ascending: true })
@@ -57,8 +51,7 @@ async function processMedia() {
     if (error) throw error;
     if (!mediaRecords?.length) {
         console.log('✅ No media records with TMDb IDs to process.');
-        // HEARTBEAT: FINISH (No data)
-        await updateWorkflowHeartbeat('Ready', 'Success: No records found to enrich.');
+        await updateWorkflowSummary('success', { processed: 0, note: 'No records found' }, 0);
         return;
     }
 
@@ -68,10 +61,10 @@ async function processMedia() {
 
     for (const record of mediaRecords) {
         processedCount++;
-        const tmdbId = record.soc_tmdb_id;
+        const tmdbId   = record.soc_tmdb_id;
         const mediaType = record.media_type === 'tv' || record.soc_tmdb?.includes('/tv/') ? 'tv' : 'movie';
-        
-        console.log(`[${processedCount}/${mediaRecords.length}] TMDb ${mediaType} ID: ${tmdbId} — ${record.name}`);
+
+        console.log(`[${processedCount}/${mediaRecords.length}] ${mediaType.toUpperCase()} ${tmdbId} — ${record.name}`);
 
         const data = mediaType === 'tv'
             ? await fetchTmdbTv(tmdbId)
@@ -79,31 +72,33 @@ async function processMedia() {
 
         if (!data) {
             failedCount++;
-            await supabase.from('media').update({ updated_at: new Date().toISOString() }).eq('id', record.id);
+            // Bump updated_at so it moves to the back of the queue
+            await supabase.from('hb_media').update({ updated_at: new Date().toISOString() }).eq('id', record.id);
             continue;
         }
 
         const isMovie = mediaType !== 'tv';
-        const extIds = data.external_ids || {};
+        const extIds  = data.external_ids || {};
 
-        const rawCast = (data.credits?.cast || []).slice(0, 15);
+        // ── Cast: look up internal talent IDs via hb_socials ────────────────
+        const rawCast     = (data.credits?.cast || []).slice(0, 15);
         const castTmdbIds = rawCast.map((c: any) => String(c.id));
-        
+
         const { data: linkedSocials } = await supabase
             .from('hb_socials')
-            .select('talent_id, identifier')
+            .select('linked_talent, identifier')
             .eq('type', 'TMDB')
             .in('identifier', castTmdbIds);
 
         const talentLookup: Record<string, string> = {};
-        linkedSocials?.forEach(s => { if (s.identifier) talentLookup[s.identifier] = s.talent_id; });
+        linkedSocials?.forEach(s => { if (s.identifier) talentLookup[s.identifier] = s.linked_talent; });
 
         const cast = rawCast.map((c: any) => ({
-            tmdb_id: c.id,
-            talent_id: talentLookup[String(c.id)] || null,
-            name: c.name,
-            character: c.character,
-            profile_path: getImageUrl(c.profile_path)
+            tmdb_id:      c.id,
+            talent_id:    talentLookup[String(c.id)] || null,
+            name:         c.name,
+            character:    c.character,
+            profile_path: getImageUrl(c.profile_path),
         }));
 
         const directors = (data.credits?.crew || [])
@@ -111,45 +106,50 @@ async function processMedia() {
             .map((c: any) => c.name);
 
         const updates: any = {
-            name: (isMovie ? data.title : data.name) || record.name,
-            about: data.overview || record.about,
+            name:         (isMovie ? data.title : data.name) || record.name,
+            about:        data.overview || record.about,
             date_release: isMovie ? data.release_date : data.first_air_date,
-            running_time: isMovie ? `${data.runtime} min` : (data.episode_run_time?.[0] ? `${data.episode_run_time[0]} min` : null),
-            genres: (data.genres || []).map((g: any) => g.name),
-            image: getImageUrl(record.image || data.poster_path),
-            rating: data.vote_average,
-            soc_tmdb: `https://www.themoviedb.org/${mediaType}/${tmdbId}`,
-            soc_tmdb_id: tmdbId,
-            soc_imdb_id: data.imdb_id || extIds.imdb_id || null,
-            soc_imdb: (data.imdb_id || extIds.imdb_id) ? `https://www.imdb.com/title/${data.imdb_id || extIds.imdb_id}` : null,
+            running_time: isMovie
+                ? (data.runtime ? `${data.runtime} min` : null)
+                : (data.episode_run_time?.[0] ? `${data.episode_run_time[0]} min` : null),
+            genres:       (data.genres || []).map((g: any) => g.name),
+            // Always prefer fresh TMDB poster; fall back to existing image
+            image:        data.poster_path ? getImageUrl(data.poster_path) : record.image,
+            rating:       data.vote_average,
+            soc_tmdb:     `https://www.themoviedb.org/${mediaType}/${tmdbId}`,
+            soc_tmdb_id:  tmdbId,
+            soc_imdb_id:  data.imdb_id || extIds.imdb_id || null,
+            soc_imdb:     (data.imdb_id || extIds.imdb_id)
+                            ? `https://www.imdb.com/title/${data.imdb_id || extIds.imdb_id}`
+                            : null,
             soc_instagram: extIds.instagram_id ? `https://instagram.com/${extIds.instagram_id}` : null,
-            soc_website: data.homepage || null,
+            soc_website:   data.homepage || null,
             soc_wikidata_id: extIds.wikidata_id || null,
             tmdb_credits: {
-                cast: cast,
-                directors: directors,
+                cast,
+                directors,
                 production_companies: (data.production_companies || []).map((pc: any) => ({
-                    id: pc.id,
-                    name: pc.name,
-                    logo_path: getImageUrl(pc.logo_path)
-                }))
+                    id:        pc.id,
+                    name:      pc.name,
+                    logo_path: getImageUrl(pc.logo_path),
+                })),
             },
             stats_boxoffice_financial: {
-                popularity: data.popularity,
-                vote_count: data.vote_count,
-                status: data.status,
-                tagline: data.tagline,
+                popularity:        data.popularity,
+                vote_count:        data.vote_count,
+                status:            data.status,
+                tagline:           data.tagline,
                 original_language: data.original_language,
-                budget: data.budget || null,
-                revenue: data.revenue || null,
-                facebook_id: extIds.facebook_id || null,
-                twitter_id: extIds.twitter_id || null
+                budget:            data.budget  || null,
+                revenue:           data.revenue || null,
+                facebook_id:       extIds.facebook_id || null,
+                twitter_id:        extIds.twitter_id  || null,
             },
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
         };
 
         const { error: updateError } = await supabase
-            .from('media')
+            .from('hb_media')
             .update(updates)
             .eq('id', record.id);
 
@@ -158,23 +158,33 @@ async function processMedia() {
             failedCount++;
         } else {
             successCount++;
-            console.log(`   ✅ Enriched: ${updates.name}`);
+            console.log(`   ✅ ${updates.name}`);
         }
 
         await sleep(SLEEP_MS);
     }
 
-    const stats = getApiStats();
-    console.log(`\n🎉 Done! Processed: ${processedCount}, Success: ${successCount}, Failed: ${failedCount}, API Success Rate: ${stats.successRate}%`);
+    const stats       = getApiStats();
+    const durationSecs = Math.round((Date.now() - runStart) / 1000);
+    const summaryObj  = {
+        processed:        processedCount,
+        enriched:         successCount,
+        failed:           failedCount,
+        api_success_rate: `${stats.successRate}%`,
+        run_at:           new Date().toISOString(),
+    };
 
-    // HEARTBEAT: FINISH
-    await updateWorkflowHeartbeat('Ready', `Success: Enriched ${successCount} titles. API Success Rate: ${stats.successRate}%`);
+    console.log(`\n🎉 Done! ${processedCount} processed — ${successCount} enriched, ${failedCount} failed (${durationSecs}s, API: ${stats.successRate}%)`);
+    await updateWorkflowSummary('success', summaryObj, durationSecs);
 }
 
-processMedia().catch(async (error) => {
-    console.error('🔥 FATAL ERROR:', error);
-    // HEARTBEAT: ERROR
-    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${error.message || String(error)}`);
-    await logSystemBug(error);
+processMedia().catch(async (err) => {
+    console.error('🔥 Fatal:', err.message);
+    await updateWorkflowSummary(
+        'failure',
+        { error: err.message, run_at: new Date().toISOString() },
+        0,
+        err.message
+    );
     process.exit(1);
 });
