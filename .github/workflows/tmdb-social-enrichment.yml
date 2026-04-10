@@ -2,20 +2,20 @@ name: TMDb Social Profile Enrichment
 
 on:
   schedule:
-    # Run daily at 3 AM UTC
+    # Run daily at 3 AM UTC — after popular talent mining (2 AM)
     - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
-      record_limit:
-        description: "Number of records to process (leave empty for all)"
+      limit:
+        description: "Max profiles to enrich (default: 1000)"
         required: false
-        default: ""
+        default: "1000"
         type: string
 
 jobs:
   enrich:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 60
 
     steps:
       - name: Notify Supabase — start
@@ -29,6 +29,7 @@ jobs:
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             -H "Content-Type: application/json" \
             -d '{"p_workflow_id": 242473770, "p_status": "running", "p_run_id": "${{ github.run_id }}"  }'
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -36,31 +37,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run TMDb Social Enrichment
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_RECORD_ID: recfzGabmPzhdNURs
-          WORKFLOW_FILE: tmdb-social-enrichment.yml
-          LIMIT: ${{ github.event.inputs.record_limit }}
-          CI: "true"
-        run: npx ts-node src/tmdb-social-enrichment.ts
+          LIMIT: ${{ github.event.inputs.limit || '1000' }}
+          WORKFLOW_ID: '242473770'
+        run: npx ts-node --transpile-only src/tmdb-social-enrichment.ts
 
-      - name: Report status
-        if: always()
-        run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ TMDb Social Enrichment completed successfully"
-          else
-            echo "❌ TMDb Social Enrichment failed"
-          fi
       - name: Notify Supabase — result
         if: always()
         env:
