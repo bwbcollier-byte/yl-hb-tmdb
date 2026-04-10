@@ -6,17 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "Max pages to fetch"
+        description: "Max pages to fetch (0 = all available)"
         required: false
         default: "5"
-      limit:
-        description: "Max records to process over all pages"
-        required: false
-        default: "0"
 
 jobs:
   enrich:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Notify Supabase — start
         env:
@@ -49,6 +46,7 @@ jobs:
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           MINING_ENDPOINT: '/movie/upcoming'
           MEDIA_TYPE: 'movie'
+          STALE_DAYS: '7'
           WORKFLOW_ID: '242622480'
         run: npx ts-node --transpile-only src/tmdb-media-mining.ts
       - name: Notify Supabase — result
