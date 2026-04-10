@@ -1,169 +1,217 @@
-import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
-import { updateWorkflowHeartbeat } from './airtable-heartbeat';
-
+import { supabase } from './supabase';
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY!;
 const TMDB_BEARER_TOKEN = process.env.TMDB_BEARER_TOKEN!;
+const MAX_PAGES  = parseInt(process.env.MAX_PAGES  || '1');
+const SLEEP_MS   = parseInt(process.env.SLEEP_MS   || '150');
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-// --- HELPERS ---
+// ─── TMDB ────────────────────────────────────────────────────────────────────
 
-let COUNTRIES_CACHE: { name: string, code: string }[] = [];
-
-async function loadCountries() {
-    if (COUNTRIES_CACHE.length > 0) return;
-    const { data } = await supabase.from('countries').select('name, country_code');
-    if (data) COUNTRIES_CACHE = data.map(c => ({ name: c.name, code: c.country_code }));
-}
-
-function parseCountryCode(placeOfBirth: string | null): string | null {
-    if (!placeOfBirth || COUNTRIES_CACHE.length === 0) return null;
-    for (const country of COUNTRIES_CACHE) {
-        if (placeOfBirth.toLowerCase().includes(country.name.toLowerCase())) {
-            return country.code?.toUpperCase() || null;
-        }
-    }
-    return null;
-}
-
-async function fetchTMDB(endpoint: string) {
-    const url = `https://api.themoviedb.org/3${endpoint}`;
-    const response = await fetch(url, {
+async function fetchTMDB(endpoint: string): Promise<any> {
+    const res = await fetch(`https://api.themoviedb.org/3${endpoint}`, {
         headers: { Authorization: `Bearer ${TMDB_BEARER_TOKEN}`, accept: 'application/json' }
     });
-    if (!response.ok) throw new Error(`TMDb API Error [${response.status}]: ${response.statusText}`);
-    return response.json() as any;
+    if (!res.ok) throw new Error(`TMDB ${res.status}: ${res.statusText} — ${endpoint}`);
+    return res.json();
 }
 
-async function getOrCreateSocial(type: string, identifier: string, name: string, url: string, talentId: string) {
-    const { data, error } = await supabase
-        .from('hb_socials')
-        .upsert({ type, identifier, name, social_url: url, linked_talent: talentId, updated_at: new Date().toISOString() }, { onConflict: 'type,identifier' })
-        .select('id').single();
-    return data?.id || null;
+// ─── SUPABASE HELPERS ────────────────────────────────────────────────────────
+
+// Load all existing TMDB person IDs in one query so we never do N individual lookups
+async function loadTmdbPersonMap(): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+        const { data, error } = await supabase
+            .from('hb_socials')
+            .select('identifier, linked_talent')
+            .eq('type', 'TMDB')
+            .not('linked_talent', 'is', null)
+            .range(from, from + pageSize - 1);
+        if (error || !data?.length) break;
+        for (const row of data) map.set(row.identifier, row.linked_talent);
+        if (data.length < pageSize) break;
+        from += pageSize;
+    }
+    return map;
 }
 
-// --- CORE LOGIC ---
+// ─── COUNTRIES ───────────────────────────────────────────────────────────────
+
+let COUNTRIES: { name: string; code: string }[] = [];
+async function loadCountries() {
+    if (COUNTRIES.length) return;
+    const { data } = await supabase.from('countries').select('name, country_code');
+    if (data) COUNTRIES = data.map(c => ({ name: c.name, code: c.country_code }));
+}
+function countryCode(placeOfBirth: string | null): string | null {
+    if (!placeOfBirth || !COUNTRIES.length) return null;
+    const lower = placeOfBirth.toLowerCase();
+    return COUNTRIES.find(c => lower.includes(c.name.toLowerCase()))?.code?.toUpperCase() ?? null;
+}
+
+// ─── MAIN ────────────────────────────────────────────────────────────────────
 
 async function run() {
-    await updateWorkflowHeartbeat('Running', 'Scraping "Now Playing" films and promoting their top cast to hb_talent.');
+    console.log('🎬 TMDb Now Playing Mining — Starting');
+
     await loadCountries();
 
-    console.log('🎬 Starting TMDb Film Now Playing & Talent Recruitment Engine');
-    
-    // 1. Get Now Playing List
-    const { results: movies } = await fetchTMDB('/movie/now_playing?language=en-US&page=1');
-    console.log(`🔍 Found ${movies.length} films currently playing in theaters.\n`);
+    // Pre-load all known TMDB person IDs → talent UUIDs (1 batch query)
+    const tmdbPersonMap = await loadTmdbPersonMap();
+    console.log(`   ✅ Pre-loaded ${tmdbPersonMap.size} existing TMDB person records\n`);
 
-    for (const m of movies) {
-        try {
-            console.log(`\n🎞️ PROMOTING FILM: ${m.title} (ID: ${m.id})`);
-            
-            // 2. Deep Scrape Movie Details
-            const movie = await fetchTMDB(`/movie/${m.id}?append_to_response=credits,external_ids&language=en-US`);
-            
-            const mediaPayload: any = {
-                name: movie.title,
-                date_release: movie.release_date,
-                about: movie.overview,
-                image: movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
-                genres: movie.genres?.map((g: any) => g.name) || [],
-                soc_tmdb_id: String(movie.id),
-                media_type: 'movie',
-                tmdb_credits: movie.credits || [],
-                updated_at: new Date().toISOString()
-            };
+    // In-run person cache — actors appearing in multiple films are processed once only
+    const personCache = new Map<number, string>(); // tmdb_person_id → talent_id
+    for (const [id, talentId] of tmdbPersonMap) personCache.set(parseInt(id), talentId);
 
-            // 3. Upsert to public.media
-            const { data: mediaRecord, error: mediaError } = await supabase
-                .from('media')
-                .upsert(mediaPayload, { onConflict: 'soc_tmdb_id' })
-                .select('id').single();
-            
-            if (mediaError) throw new Error(`Media Promotion Error: ${mediaError.message}`);
-            const mediaId = mediaRecord.id;
+    let totalMedia = 0, totalTalentNew = 0;
 
-            // 4. RECRUIT TOP CAST (Discovery Chain)
-            const topCast = movie.credits?.cast?.slice(0, 10) || []; // Top 10 actors
-            const talentUuids: string[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+        const { results: movies } = await fetchTMDB(`/movie/now_playing?language=en-US&page=${page}`);
+        if (!movies?.length) break;
+        console.log(`📄 Page ${page}: ${movies.length} films`);
 
-            console.log(`   🤝 Discovering Talent: Analyzing top ${topCast.length} cast members...`);
-            for (const cast of topCast) {
-                try {
-                    // Deep Scrape Person Profile
-                    const p = await fetchTMDB(`/person/${cast.id}?append_to_response=external_ids,images&language=en-US`);
-                    
-                    const talentBasePayload: any = {
-                        name: p.name,
-                        image: p.profile_path ? `https://image.tmdb.org/t/p/w500${p.profile_path}` : null,
-                        status: 'Ready',
-                        act_type: p.known_for_department || 'Acting',
-                        gender: p.gender === 1 ? 'Female' : p.gender === 2 ? 'Male' : 'Unknown',
-                        birth_location: p.place_of_birth,
-                        biography: p.biography,
-                        category: 'Film & Television',
-                        birth_country: parseCountryCode(p.place_of_birth),
-                        updated_at: new Date().toISOString()
-                    };
+        for (const m of movies) {
+            try {
+                console.log(`\n🎞️  ${m.title} (TMDB: ${m.id})`);
 
-                    // Check for existing connection via TMDB ID
-                    const { data: existingSocial } = await supabase.from('hb_socials').select('linked_talent').eq('type', 'TMDB').eq('identifier', String(p.id)).maybeSingle();
-                    let talentId = existingSocial?.linked_talent;
+                // Full movie detail + credits in one API call
+                const movie = await fetchTMDB(
+                    `/movie/${m.id}?append_to_response=credits,external_ids&language=en-US`
+                );
+                await sleep(SLEEP_MS);
 
-                    if (talentId) {
-                        await supabase.from('hb_talent').update(talentBasePayload).eq('id', talentId);
-                    } else {
-                        const { data: newTalent } = await supabase.from('hb_talent').insert({ ...talentBasePayload, created_at: new Date().toISOString() }).select('id').single();
-                        talentId = newTalent?.id;
-                    }
+                // ── Upsert hb_media ─────────────────────────────────────────
+                const { data: mediaRow, error: mediaErr } = await supabase
+                    .from('hb_media')
+                    .upsert({
+                        name:         movie.title,
+                        date_release: movie.release_date || null,
+                        about:        movie.overview     || null,
+                        image:        movie.poster_path  ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null,
+                        genres:       movie.genres?.map((g: any) => g.name) ?? [],
+                        soc_tmdb_id:  String(movie.id),
+                        soc_tmdb:     `https://www.themoviedb.org/movie/${movie.id}`,
+                        soc_imdb_id:  movie.external_ids?.imdb_id || null,
+                        soc_imdb:     movie.external_ids?.imdb_id
+                                        ? `https://www.imdb.com/title/${movie.external_ids.imdb_id}/`
+                                        : null,
+                        media_type:   'movie',
+                        credits:      movie.credits ?? null,
+                        updated_at:   new Date().toISOString(),
+                    }, { onConflict: 'soc_tmdb_id' })
+                    .select('id')
+                    .single();
 
-                    if (talentId) {
-                        talentUuids.push(talentId);
-                        
-                        // Provision Socials
-                        const socials = [
-                            { type: 'TMDB', id: String(p.id), url: `https://tmdb.org/person/${p.id}`, field: 'soc_tmdb' },
-                            { type: 'INSTAGRAM', id: p.external_ids?.instagram_id, url: p.external_ids?.instagram_id ? `https://instagram.com/${p.external_ids.instagram_id}` : null, field: 'soc_instagram' },
-                            { type: 'TIKTOK', id: p.external_ids?.tiktok_id, url: p.external_ids?.tiktok_id ? `https://tiktok.com/@${p.external_ids.tiktok_id}` : null, field: 'soc_tiktok' },
-                            { type: 'IMDB', id: p.external_ids?.imdb_id, url: p.external_ids?.imdb_id ? `https://imdb.com/name/${p.external_ids.imdb_id}` : null, field: 'soc_imdb' }
-                        ];
-
-                        let linkedSocialIds: any = {};
-                        for (const s of socials) {
-                            if (s.id && s.url) {
-                                const uuid = await getOrCreateSocial(s.type, s.id, p.name, s.url, talentId);
-                                if (uuid) linkedSocialIds[s.field] = uuid;
-                            }
-                        }
-                        if (Object.keys(linkedSocialIds).length > 0) {
-                            await supabase.from('hb_talent').update(linkedSocialIds).eq('id', talentId);
-                        }
-                    }
-                } catch (err: any) {
-                    console.error(`      ❌ Talent Scrape Error (${cast.name}): ${err.message}`);
+                if (mediaErr) {
+                    console.error(`   ❌ hb_media error: ${mediaErr.message}`);
+                    continue;
                 }
-            }
+                totalMedia++;
 
-            // 5. Final Media Sync (Link Talent to Film)
-            if (talentUuids.length > 0) {
-                await supabase.from('media').update({ linked_talent: talentUuids }).eq('id', mediaId);
-                console.log(`   ✅ Film Fully Enriched & Linked to ${talentUuids.length} Top Talent.`);
-            }
+                // ── Process top cast ─────────────────────────────────────────
+                const topCast  = movie.credits?.cast?.slice(0, 10) ?? [];
+                const talentIds: string[] = [];
+                const socialsQueue: any[] = [];  // batch all socials for this film
 
-        } catch (err: any) {
-            console.error(`   ❌ Film Processing Error: ${err.message}`);
+                for (const cast of topCast) {
+                    try {
+                        // Actor already processed this run — just link them
+                        if (personCache.has(cast.id)) {
+                            talentIds.push(personCache.get(cast.id)!);
+                            continue;
+                        }
+
+                        const p = await fetchTMDB(
+                            `/person/${cast.id}?append_to_response=external_ids&language=en-US`
+                        );
+                        await sleep(SLEEP_MS);
+
+                        const talentPayload = {
+                            name:           p.name,
+                            image:          p.profile_path ? `https://image.tmdb.org/t/p/w500${p.profile_path}` : null,
+                            status:         'Ready',
+                            act_type:       p.known_for_department || 'Acting',
+                            gender:         p.gender === 1 ? 'Female' : p.gender === 2 ? 'Male' : 'Unknown',
+                            birth_location: p.place_of_birth   || null,
+                            biography:      p.biography        || null,
+                            category:       'Film & Television',
+                            birth_country:  countryCode(p.place_of_birth),
+                            updated_at:     new Date().toISOString(),
+                        };
+
+                        let talentId: string | null = null;
+                        const existingId = tmdbPersonMap.get(String(p.id));
+
+                        if (existingId) {
+                            await supabase.from('hb_talent').update(talentPayload).eq('id', existingId);
+                            talentId = existingId;
+                        } else {
+                            const { data: newT } = await supabase
+                                .from('hb_talent')
+                                .insert({ ...talentPayload, created_at: new Date().toISOString() })
+                                .select('id')
+                                .single();
+                            talentId = newT?.id ?? null;
+                            if (talentId) totalTalentNew++;
+                        }
+
+                        if (!talentId) continue;
+
+                        // Cache so this actor isn't re-processed in later films
+                        personCache.set(cast.id, talentId);
+                        tmdbPersonMap.set(String(p.id), talentId);
+                        talentIds.push(talentId);
+
+                        // Queue socials — upserted in one batch after the cast loop
+                        const ext = p.external_ids ?? {};
+                        const now = new Date().toISOString();
+                        socialsQueue.push(
+                            { type: 'TMDB',      identifier: String(p.id),          name: p.name, social_url: `https://www.themoviedb.org/person/${p.id}`, linked_talent: talentId, updated_at: now },
+                            ...(ext.imdb_id      ? [{ type: 'IMDB',      identifier: ext.imdb_id,      name: p.name, social_url: `https://www.imdb.com/name/${ext.imdb_id}/`,          linked_talent: talentId, updated_at: now }] : []),
+                            ...(ext.instagram_id ? [{ type: 'INSTAGRAM', identifier: ext.instagram_id, name: p.name, social_url: `https://instagram.com/${ext.instagram_id}`,           linked_talent: talentId, updated_at: now }] : []),
+                            ...(ext.tiktok_id    ? [{ type: 'TIKTOK',    identifier: ext.tiktok_id,    name: p.name, social_url: `https://tiktok.com/@${ext.tiktok_id}`,                linked_talent: talentId, updated_at: now }] : []),
+                            ...(ext.twitter_id   ? [{ type: 'TWITTER',   identifier: ext.twitter_id,   name: p.name, social_url: `https://twitter.com/${ext.twitter_id}`,               linked_talent: talentId, updated_at: now }] : []),
+                        );
+
+                    } catch (err: any) {
+                        console.error(`   ⚠️  ${cast.name}: ${err.message}`);
+                    }
+                }
+
+                // ── Batch upsert all socials for this film (1 DB call) ───────
+                if (socialsQueue.length > 0) {
+                    const { error: socErr } = await supabase
+                        .from('hb_socials')
+                        .upsert(socialsQueue, { onConflict: 'type,identifier' });
+                    if (socErr) console.error(`   ⚠️  Socials batch error: ${socErr.message}`);
+                }
+
+                // ── Link talent to media ─────────────────────────────────────
+                if (talentIds.length > 0) {
+                    await supabase
+                        .from('hb_media')
+                        .update({ linked_talent: talentIds })
+                        .eq('id', mediaRow.id);
+                }
+
+                console.log(`   ✅ ${talentIds.length} talent linked (${socialsQueue.length} socials queued)`);
+
+            } catch (err: any) {
+                console.error(`   ❌ ${m.title}: ${err.message}`);
+            }
         }
     }
 
-    console.log('\n🎉 Now Playing Induction Complete!');
-    await updateWorkflowHeartbeat('Ready', `Success: Imported ${movies.length} films and promoted their lead cast to hb_talent.`);
+    console.log(`\n🎉 Done! ${totalMedia} films processed, ${totalTalentNew} new talent added`);
 }
 
-run().catch(async err => {
-    console.error('Fatal Error:', err);
-    await updateWorkflowHeartbeat('Errors', `Fatal Error: ${err.message}`);
+run().catch(err => {
+    console.error('🔥 Fatal:', err.message);
+    process.exit(1);
 });
