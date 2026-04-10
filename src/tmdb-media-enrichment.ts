@@ -43,9 +43,9 @@ async function processMedia() {
 
     const { data: mediaRecords, error } = await supabase
         .from('hb_media')
-        .select('*')
+        .select('id, soc_tmdb_id, soc_tmdb, media_type, name, image, about')
         .not('soc_tmdb_id', 'is', null)
-        .order('updated_at', { ascending: true })
+        .order('check_tmdb_enrichment', { ascending: true, nullsFirst: true })
         .limit(LIMIT);
 
     if (error) throw error;
@@ -72,8 +72,8 @@ async function processMedia() {
 
         if (!data) {
             failedCount++;
-            // Bump updated_at so it moves to the back of the queue
-            await supabase.from('hb_media').update({ updated_at: new Date().toISOString() }).eq('id', record.id);
+            // Bump check_tmdb_enrichment so it moves to the back of the queue (not retried today)
+            await supabase.from('hb_media').update({ check_tmdb_enrichment: new Date().toISOString() }).eq('id', record.id);
             continue;
         }
 
@@ -145,7 +145,8 @@ async function processMedia() {
                 facebook_id:       extIds.facebook_id || null,
                 twitter_id:        extIds.twitter_id  || null,
             },
-            updated_at: new Date().toISOString(),
+            updated_at:              new Date().toISOString(),
+            check_tmdb_enrichment:   new Date().toISOString(),
         };
 
         const { error: updateError } = await supabase
