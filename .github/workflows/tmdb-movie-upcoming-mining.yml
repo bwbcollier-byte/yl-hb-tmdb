@@ -36,9 +36,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run Mining Script
         env:
@@ -51,7 +52,7 @@ jobs:
           MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
           MINING_ENDPOINT: '/movie/upcoming'
           MEDIA_TYPE: 'movie'
-        run: npx ts-node src/tmdb-media-mining.ts
+        run: npx ts-node --transpile-only src/tmdb-media-mining.ts
       - name: Notify Supabase — result
         if: always()
         env:

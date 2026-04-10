@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       max_pages:
-        description: "Max pages to fetch (default: 1)"
+        description: "Max pages to fetch (0 or blank = all available)"
         required: false
-        default: "1"
+        default: "0"
 
 jobs:
   enrich:
@@ -32,17 +32,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run Mining Script
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '1' }}
-        run: npx ts-node src/tmdb-now-playing-mining.ts
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
+          MINING_ENDPOINT: '/movie/now_playing'
+          MEDIA_TYPE: 'movie'
+        run: npx ts-node --transpile-only src/tmdb-media-mining.ts
       - name: Notify Supabase — result
         if: always()
         env:

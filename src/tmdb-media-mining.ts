@@ -99,11 +99,19 @@ async function run() {
 
     let totalMedia = 0, totalTalentNew = 0;
 
-    for (let page = 1; page <= MAX_PAGES; page++) {
-        const sep = ENDPOINT.includes('?') ? '&' : '?';
-        const { results: items } = await fetchTMDB(`${ENDPOINT}${sep}language=en-US&page=${page}`);
-        if (!items?.length) break;
-        console.log(`📄 Page ${page}: ${items.length} titles`);
+    // Fetch page 1 to discover total_pages, then cap at MAX_PAGES (0 = all)
+    const sep = ENDPOINT.includes('?') ? '&' : '?';
+    const firstPage = await fetchTMDB(`${ENDPOINT}${sep}language=en-US&page=1`);
+    const discovered = firstPage.total_pages ?? 1;
+    const pageLimit  = MAX_PAGES > 0 ? Math.min(MAX_PAGES, discovered) : discovered;
+    console.log(`   📋 ${firstPage.total_results ?? '?'} titles across ${pageLimit} page(s) (API total: ${discovered})\n`);
+
+    for (let page = 1; page <= pageLimit; page++) {
+        const items: any[] = page === 1
+            ? (firstPage.results ?? [])
+            : (await fetchTMDB(`${ENDPOINT}${sep}language=en-US&page=${page}`)).results ?? [];
+        if (!items.length) break;
+        console.log(`📄 Page ${page}/${pageLimit}: ${items.length} titles`);
 
         for (const item of items) {
             try {
