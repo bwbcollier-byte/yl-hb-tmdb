@@ -18,6 +18,17 @@ jobs:
   enrich:
     runs-on: ubuntu-latest
     steps:
+      - name: Notify Supabase — start
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"p_workflow_id": 242622478, "p_status": "running", "p_run_id": "${{ github.run_id }}"  }'
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -41,3 +52,17 @@ jobs:
           MINING_ENDPOINT: '/movie/top_rated'
           MEDIA_TYPE: 'movie'
         run: npx ts-node src/tmdb-media-mining.ts
+      - name: Notify Supabase — result
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          DURATION=$(( $(date +%s) - $START_TIME ))
+          STATUS="${{ job.status }}"
+          PAYLOAD=$(printf '{"p_workflow_id": 242622478, "p_status": "%s", "p_duration_secs": %s, "p_run_id": "${{ github.run_id }}"}' "$STATUS" "$DURATION")
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
