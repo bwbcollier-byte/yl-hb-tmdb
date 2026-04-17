@@ -8,7 +8,7 @@ on:
       max_pages:
         description: "Max pages to fetch (0 = all available)"
         required: false
-        default: "5"
+        default: "20"
 
 jobs:
   enrich:
@@ -43,7 +43,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '5' }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '20' }}
+          STALE_DAYS: '3'
           MINING_ENDPOINT: '/movie/popular'
           MEDIA_TYPE: 'movie'
           WORKFLOW_ID: '242622477'
