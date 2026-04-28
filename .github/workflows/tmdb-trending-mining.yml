@@ -12,6 +12,10 @@ on:
         default: "3"
         type: string
 
+concurrency:
+  group: tmdb-trending-talent-mining
+  cancel-in-progress: false
+
 jobs:
   mine:
     runs-on: ubuntu-latest
