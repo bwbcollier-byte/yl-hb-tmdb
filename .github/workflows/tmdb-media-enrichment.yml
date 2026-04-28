@@ -12,6 +12,10 @@ on:
         default: ""
         type: string
 
+concurrency:
+  group: tmdb-media-profile-enrichment
+  cancel-in-progress: false
+
 jobs:
   enrich:
     runs-on: ubuntu-latest
