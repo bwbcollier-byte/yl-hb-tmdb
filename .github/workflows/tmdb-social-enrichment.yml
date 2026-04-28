@@ -12,6 +12,10 @@ on:
         default: "1000"
         type: string
 
+concurrency:
+  group: tmdb-social-profile-enrichment
+  cancel-in-progress: false
+
 jobs:
   enrich:
     runs-on: ubuntu-latest
