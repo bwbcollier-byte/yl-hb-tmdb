@@ -152,9 +152,18 @@ async function run() {
                 ...(ext.wikidata_id  ? [{ type: 'WIKIDATA',  identifier: ext.wikidata_id,  name: p.name, social_url: `https://www.wikidata.org/wiki/${ext.wikidata_id}`,  linked_talent: talentId, updated_at: now }] : []),
             ];
 
+            // Deduplicate by type+identifier before upserting to prevent duplicate-key conflicts
+            const seen = new Set<string>();
+            const dedupedSocials = socials.filter(r => {
+                const key = `${r.type}::${r.identifier}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
             const { error: socialsErr } = await supabase
                 .from('hb_socials')
-                .upsert(socials, { onConflict: 'type,identifier' });
+                .upsert(dedupedSocials, { onConflict: 'type,identifier' });
             if (socialsErr) console.warn(`   ⚠️  Socials upsert: ${socialsErr.message}`);
             else {
                 // Update the person map so later pages benefit from this run

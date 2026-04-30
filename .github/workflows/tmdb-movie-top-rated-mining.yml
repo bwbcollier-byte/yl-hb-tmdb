@@ -48,7 +48,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '100' }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '20' }}
           MINING_ENDPOINT: '/movie/top_rated'
           MEDIA_TYPE: 'movie'
           WORKFLOW_ID: '242622478'
