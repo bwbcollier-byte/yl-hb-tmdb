@@ -1,7 +1,6 @@
 import { supabase } from './supabase';
 import { findRecordByExternalId, sleep, getApiStats, SLEEP_MS } from './tmdb-api';
 import * as dotenv from 'dotenv';
-import fetch from 'node-fetch';
 dotenv.config();
 
 const LIMIT_ENV = process.env.LIMIT;

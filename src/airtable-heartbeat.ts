@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 
 /**
  * Updates the Airtable Workflow record with the latest execution status.

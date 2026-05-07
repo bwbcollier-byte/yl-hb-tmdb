@@ -1,0 +1,124 @@
+name: TMDb Media Mining
+
+# Consolidated workflow — matrix-runs the 10 movie/TV mining variants that
+# previously lived in separate files. Each cron schedule maps to exactly one
+# matrix entry via the `if:` condition; `workflow_dispatch` lets you pick
+# one target or run all.
+
+on:
+  schedule:
+    - cron: '30 7 * * *'   # movie-now-playing
+    - cron: '0 8 * * *'    # movie-popular
+    - cron: '30 8 * * *'   # movie-top-rated
+    - cron: '30 9 * * *'   # movie-trending
+    - cron: '0 9 * * *'    # movie-upcoming
+    - cron: '0 5 * * *'    # tv-airing-today
+    - cron: '30 5 * * *'   # tv-on-the-air
+    - cron: '0 6 * * *'    # tv-popular
+    - cron: '30 6 * * *'   # tv-top-rated
+    - cron: '0 7 * * *'    # tv-trending
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which mining target to run
+        type: choice
+        default: all
+        options:
+          - all
+          - movie-now-playing
+          - movie-popular
+          - movie-top-rated
+          - movie-trending
+          - movie-upcoming
+          - tv-airing-today
+          - tv-on-the-air
+          - tv-popular
+          - tv-top-rated
+          - tv-trending
+      max_pages:
+        description: Override max pages (blank = per-target default)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  mine:
+    name: ${{ matrix.target.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: tmdb-mining-${{ matrix.target.name }}
+      cancel-in-progress: false
+    if: |
+      (github.event_name == 'schedule' && matrix.target.cron == github.event.schedule) ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == matrix.target.name))
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: movie-now-playing, cron: '30 7 * * *', endpoint: '/movie/now_playing',  media: movie, stale: '3', default_max: '0',  workflow_id: '242622476' }
+          - { name: movie-popular,     cron: '0 8 * * *',  endpoint: '/movie/popular',      media: movie, stale: '3', default_max: '20', workflow_id: '242622477' }
+          - { name: movie-top-rated,   cron: '30 8 * * *', endpoint: '/movie/top_rated',    media: movie, stale: '7', default_max: '5',  workflow_id: '242622478' }
+          - { name: movie-trending,    cron: '30 9 * * *', endpoint: '/trending/movie/day', media: movie, stale: '1', default_max: '5',  workflow_id: '242622479' }
+          - { name: movie-upcoming,    cron: '0 9 * * *',  endpoint: '/movie/upcoming',     media: movie, stale: '7', default_max: '5',  workflow_id: '242622480' }
+          - { name: tv-airing-today,   cron: '0 5 * * *',  endpoint: '/tv/airing_today',    media: tv,    stale: '1', default_max: '5',  workflow_id: '242622481' }
+          - { name: tv-on-the-air,     cron: '30 5 * * *', endpoint: '/tv/on_the_air',      media: tv,    stale: '3', default_max: '5',  workflow_id: '242622482' }
+          - { name: tv-popular,        cron: '0 6 * * *',  endpoint: '/tv/popular',         media: tv,    stale: '3', default_max: '5',  workflow_id: '242622483' }
+          - { name: tv-top-rated,      cron: '30 6 * * *', endpoint: '/tv/top_rated',       media: tv,    stale: '7', default_max: '5',  workflow_id: '242622484' }
+          - { name: tv-trending,       cron: '0 7 * * *',  endpoint: '/trending/tv/day',    media: tv,    stale: '1', default_max: '5',  workflow_id: '242622485' }
+
+    steps:
+      - name: Notify Supabase — start
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WORKFLOW_ID: ${{ matrix.target.workflow_id }}
+        run: |
+          echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_workflow_id\": $WORKFLOW_ID, \"p_status\": \"running\", \"p_run_id\": \"${{ github.run_id }}\"}"
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Run TMDb media mining
+        env:
+          SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TMDB_BEARER_TOKEN:   ${{ secrets.TMDB_BEARER_TOKEN }}
+          MAX_PAGES:           ${{ github.event.inputs.max_pages || matrix.target.default_max }}
+          MINING_ENDPOINT:     ${{ matrix.target.endpoint }}
+          MEDIA_TYPE:          ${{ matrix.target.media }}
+          STALE_DAYS:          ${{ matrix.target.stale }}
+          WORKFLOW_ID:         ${{ matrix.target.workflow_id }}
+        run: npx tsx src/tmdb-media-mining.ts
+
+      - name: Notify Supabase — result
+        if: always()
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WORKFLOW_ID:          ${{ matrix.target.workflow_id }}
+        run: |
+          DURATION=$(( $(date +%s) - START_TIME ))
+          STATUS="${{ job.status }}"
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_workflow_id\": $WORKFLOW_ID, \"p_status\": \"$STATUS\", \"p_duration_secs\": $DURATION, \"p_run_id\": \"${{ github.run_id }}\"}"

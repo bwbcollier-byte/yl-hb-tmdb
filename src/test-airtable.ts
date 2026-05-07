@@ -1,5 +1,4 @@
 import * as dotenv from 'dotenv';
-import fetch from 'node-fetch';
 dotenv.config();
 
 const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
