@@ -19,8 +19,19 @@ function chunk<T>(arr: T[], n: number): T[][] {
     return out;
 }
 
+function deduplicateSocials(rows: any[]): any[] {
+    const seen = new Set<string>();
+    return rows.filter(r => {
+        const key = `${r.type}::${r.identifier}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
 async function batchUpsertSocials(rows: any[]): Promise<void> {
-    for (const batch of chunk(rows, UPSERT_CHUNK)) {
+    const deduped = deduplicateSocials(rows);
+    for (const batch of chunk(deduped, UPSERT_CHUNK)) {
         let attempts = 0;
         while (attempts < 3) {
             const { error } = await supabase
