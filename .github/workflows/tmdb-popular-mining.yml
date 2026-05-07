@@ -12,13 +12,16 @@ on:
         default: "50"
         type: string
 
-concurrency:
-  group: tmdb-popular-talent-mining
-  cancel-in-progress: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   mine:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
@@ -51,7 +54,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TMDB_BEARER_TOKEN: ${{ secrets.TMDB_BEARER_TOKEN }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '20' }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '50' }}
           WORKFLOW_ID: '242604814'
         run: npx ts-node --transpile-only src/tmdb-popular-mining.ts
 
