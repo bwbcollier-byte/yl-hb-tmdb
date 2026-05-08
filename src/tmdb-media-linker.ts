@@ -41,7 +41,7 @@ async function linkMedia() {
 
     // Rule #1: Scan for records with IMDb ID but NO TMDb ID
     const { data: records, error } = await supabase
-        .from('media')
+        .from('hb_media')
         .select('id, name, soc_imdb_id, soc_imdb')
         .is('soc_tmdb_id', null)
         .not('soc_imdb_id', 'is', null) // Must have an IMDb ID to match
@@ -88,7 +88,7 @@ async function linkMedia() {
             const mediaType = movie ? 'movie' : 'tv';
 
             const { error: updateError } = await supabase
-                .from('media')
+                .from('hb_media')
                 .update({
                     soc_tmdb_id: tmdbId,
                     media_type: mediaType,
